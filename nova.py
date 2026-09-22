@@ -1,5 +1,5 @@
 # ============================================================
-# NOVA v14.7 - NVIDIA NIM + Mobile Fix
+# NOVA v14.8 - Fixed web_search + FAL primary
 # Creator: Shavit Klein
 # ============================================================
 import os, sys, json, time, base64, hashlib, secrets, threading, traceback, urllib.parse, re
@@ -14,20 +14,17 @@ try: from groq import Groq
 except ImportError: Groq = None
 
 APP_NAME = "NOVA"
-VERSION = "14.7"
+VERSION = "14.8"
 CREATOR = "Shavit Klein"
 BRAND = "POWERED BY SK"
 HOST = "0.0.0.0"
 PORT = int(os.environ.get("PORT", "8080"))
 
-# === API KEYS ===
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "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").strip()
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "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").strip()
 FAL_API_KEY = os.environ.get("FAL_API_KEY", "bc8f9d7a-fbef-431d-8ff3-11c3f0cf53d6:d9c1a581addeff006f261f8978da680e").strip()
 
-# NVIDIA NIM endpoints
 NVIDIA_FLUX_SCHNELL = "https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-schnell"
-NVIDIA_FLUX_DEV = "https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-dev"
 FAL_MODEL = "fal-ai/flux/schnell"
 
 USE_SQLITE = not os.environ.get("DATABASE_URL")
@@ -149,7 +146,6 @@ def detect_image_intent(msg):
 
 
 def translate_to_english(text):
-    """Translate Hebrew/Russian prompt to English for better image gen."""
     if not text:
         return text
     he = len(re.findall(r'[\u0590-\u05FF]', text))
@@ -866,53 +862,41 @@ def call_groq(history, model_id, temperature=0.7, max_tokens=2048, system_prompt
         return {"ok": False, "error": err[:300]}
 
 
-def generate_image_nvidia(prompt):
-    """Generate image with NVIDIA NIM FLUX.1-schnell."""
-    if not NVIDIA_API_KEY or not requests:
-        return None, "NVIDIA key missing"
+def web_search(query, max_results=5):
+    if not requests:
+        return []
     try:
-        headers = {
-            "Authorization": "Bearer " + NVIDIA_API_KEY,
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        }
-        payload = {
-            "prompt": prompt[:1000],
-            "mode": "base",
-            "seed": 0,
-            "steps": 4,
-            "width": 1024,
-            "height": 1024
-        }
-        r = requests.post(NVIDIA_FLUX_SCHNELL, headers=headers, json=payload, timeout=90)
-        if r.status_code == 200:
-            d = r.json()
-            # NVIDIA returns b64 in 'artifacts' or 'image'
-            artifacts = d.get("artifacts") or []
-            if artifacts:
-                b64 = artifacts[0].get("base64", "")
-                if b64:
-                    return "data:image/png;base64," + b64, None
-            # Alternative format
-            img_b64 = d.get("image") or d.get("b64_json") or ""
-            if img_b64:
-                return "data:image/png;base64," + img_b64, None
-            return None, "NVIDIA: no image in response"
-        else:
-            err = r.text[:200]
-            log("NVIDIA error " + str(r.status_code) + ": " + err, "ERROR")
-            if r.status_code == 401:
-                return None, "NVIDIA key invalid"
-            if r.status_code == 429:
-                return None, "NVIDIA rate limit"
-            return None, "NVIDIA HTTP " + str(r.status_code)
+        url = "https://html.duckduckgo.com/html/"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        r = requests.post(url, data={"q": query}, headers=headers, timeout=15)
+        if r.status_code != 200:
+            return []
+        html = r.text
+        results = []
+        titles = re.findall(r'<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html, re.DOTALL)
+        snippets = re.findall(r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>', html, re.DOTALL)
+
+        def clean(t):
+            t = re.sub(r'<[^>]+>', '', t)
+            t = t.replace("&amp;", "&").replace("&quot;", '"').replace("&#x27;", "'").replace("&lt;", "<").replace("&gt;", ">")
+            return t.strip()
+
+        for i, (url_raw, title_raw) in enumerate(titles[:max_results]):
+            real_url = url_raw
+            if "uddg=" in url_raw:
+                try:
+                    real_url = urllib.parse.unquote(url_raw.split("uddg=")[1].split("&")[0])
+                except:
+                    pass
+            results.append({"title": clean(title_raw), "url": real_url,
+                            "snippet": clean(snippets[i]) if i < len(snippets) else ""})
+        return results
     except Exception as e:
-        log("NVIDIA exception: " + str(e), "ERROR")
-        return None, "NVIDIA: " + str(e)[:100]
+        log("web_search: " + str(e), "WARN")
+        return []
 
 
 def generate_image_fal(prompt):
-    """Fallback: FAL."""
     if FAL_API_KEY and requests:
         url = "https://fal.run/" + FAL_MODEL
         headers = {"Authorization": "Key " + FAL_API_KEY, "Content-Type": "application/json"}
@@ -930,8 +914,42 @@ def generate_image_fal(prompt):
     return None, "FAL failed"
 
 
+def generate_image_nvidia(prompt):
+    if not NVIDIA_API_KEY or not requests:
+        return None, "NVIDIA key missing"
+    try:
+        headers = {
+            "Authorization": "Bearer " + NVIDIA_API_KEY,
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+        payload = {
+            "prompt": prompt[:1000],
+            "mode": "base",
+            "seed": 0,
+            "steps": 4,
+            "width": 1024,
+            "height": 1024
+        }
+        r = requests.post(NVIDIA_FLUX_SCHNELL, headers=headers, json=payload, timeout=30)
+        if r.status_code == 200:
+            d = r.json()
+            artifacts = d.get("artifacts") or []
+            if artifacts:
+                b64 = artifacts[0].get("base64", "")
+                if b64:
+                    return "data:image/png;base64," + b64, None
+            img_b64 = d.get("image") or d.get("b64_json") or ""
+            if img_b64:
+                return "data:image/png;base64," + img_b64, None
+            return None, "NVIDIA: no image"
+        return None, "NVIDIA HTTP " + str(r.status_code)
+    except Exception as e:
+        log("NVIDIA exception: " + str(e), "ERROR")
+        return None, "NVIDIA: " + str(e)[:100]
+
+
 def generate_image_pollinations(prompt):
-    """Last resort fallback."""
     try:
         enc = urllib.parse.quote(prompt[:500])
         seed = secrets.randbelow(1000000)
@@ -942,27 +960,22 @@ def generate_image_pollinations(prompt):
 
 
 def generate_image(prompt):
-    """Try NVIDIA first, then FAL, then Pollinations."""
-    # Translate Hebrew/Russian to English for better results
     en_prompt = translate_to_english(prompt)
-    
-    # Try NVIDIA first
-    url, err = generate_image_nvidia(en_prompt)
-    if url:
-        log("Image generated via NVIDIA")
-        USAGE["images"] += 1
-        return url, None
-    log("NVIDIA failed: " + str(err), "WARN")
-    
-    # Try FAL
+    # FAL first
     url, err = generate_image_fal(en_prompt)
     if url:
         log("Image generated via FAL")
         USAGE["images"] += 1
         return url, None
     log("FAL failed: " + str(err), "WARN")
-    
-    # Last resort: Pollinations
+    # NVIDIA second
+    url, err = generate_image_nvidia(en_prompt)
+    if url:
+        log("Image generated via NVIDIA")
+        USAGE["images"] += 1
+        return url, None
+    log("NVIDIA failed: " + str(err), "WARN")
+    # Pollinations last
     url, err = generate_image_pollinations(en_prompt)
     if url:
         log("Image generated via Pollinations")
@@ -1092,9 +1105,9 @@ MANIFEST = {
         {"src": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxOTIgMTkyIj48cmVjdCB3aWR0aD0iMTkyIiBoZWlnaHQ9IjE5MiIgcng9IjI4IiBmaWxsPSIjMGEwYTBhIi8+PHRleHQgeD0iOTYiIHk9IjEzMCIgZm9udC1mYW1pbHk9IkFyaWFsIiBmb250LXNpemU9IjExMCIgZm9udC13ZWlnaHQ9ImJvbGQiIGZpbGw9IiNlZGVkZWQiIHRleHQtYW5jaG9yPSJtaWRkbGUiPk48L3RleHQ+PC9zdmc+", "sizes": "192x192", "type": "image/svg+xml", "purpose": "any maskable"},
         {"src": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MTIgNTEyIj48cmVjdCB3aWR0aD0iNTEyIiBoZWlnaHQ9IjUxMiIgcng9Ijc2IiBmaWxsPSIjMGEwYTBhIi8+PHRleHQgeD0iMjU2IiB5PSIzNDAiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIzMDAiIGZvbnQtd2VpZ2h0PSJib2xkIiBmaWxsPSIjZWRlZGVkIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5OPC90ZXh0Pjwvc3ZnPg==", "sizes": "512x512", "type": "image/svg+xml", "purpose": "any maskable"}
     ]
-}# ============================================================
-# Embedded frontend
-# ============================================================
+}
+
+
 HTML = r"""<!DOCTYPE html>
 <html lang="he" dir="rtl">
 <head>
@@ -1264,12 +1277,6 @@ border:1px solid var(--border);cursor:pointer}
 border:1px solid rgba(239,68,68,.3);border-radius:var(--r-md);color:#fca5a5;
 font-size:13px;margin:10px 0;direction:rtl;line-height:1.6}
 .img-error-box b{color:#fff}
-.img-loading-box{padding:20px;background:var(--panel);border:1px solid var(--border2);
-border-radius:var(--r-md);margin:10px 0;text-align:center;color:var(--text2);font-size:13px}
-.img-loading-box .spinner{display:inline-block;width:24px;height:24px;
-border:3px solid var(--border2);border-top-color:var(--text);border-radius:50%;
-animation:spin 0.8s linear infinite;margin-bottom:10px}
-@keyframes spin{to{transform:rotate(360deg)}}
 .thinking{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:14px;padding:4px 0}
 .dots{display:inline-flex;gap:4px}
 .dots i{width:5px;height:5px;border-radius:50%;background:var(--text2);animation:pl 1.2s infinite}
@@ -1504,7 +1511,6 @@ textarea.inp{min-height:70px;font-size:16px}
 .gallery-grid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}
 .gallery-grid img{height:120px}
 #controlBtn,#mouseBtn{display:none!important}
-.menu{display:grid}
 }
 </style>
 </head>
@@ -1536,7 +1542,7 @@ textarea.inp{min-height:70px;font-size:16px}
 <svg class="ic" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M3 9h18"/></svg>
 <span>CONTROL PANEL</span>
 </button>
-<div class="sb-sign"><b>SHVIT KLEIN</b><br>NOVA v14.7</div>
+<div class="sb-sign"><b>SHVIT KLEIN</b><br>NOVA v14.8</div>
 </div>
 </aside>
 <main class="main">
@@ -1621,7 +1627,7 @@ textarea.inp{min-height:70px;font-size:16px}
 <div class="fld"><div class="ft" style="margin-bottom:6px">קול</div>
 <select id="optVoice"><option value="">ברירת מחדל — זיהוי אוטומטי</option></select></div>
 <div class="fld" style="text-align:center;color:var(--muted);font-size:12px;padding-top:20px">
-NOVA v14.7 · <b style="color:var(--text2)">Shavit Klein</b></div>
+NOVA v14.8 · <b style="color:var(--text2)">Shavit Klein</b></div>
 </div></div></div>
 
 <div class="md" id="mdTags"><div class="mbox" style="width:min(420px,100%)">
@@ -3062,8 +3068,8 @@ class Handler(BaseHTTPRequestHandler):
         if wants_image and msg:
             url, err = generate_image(msg)
             if url:
-                log_image(u["user_id"], msg, url, "nvidia-flux")
-                save_message(cid, "assistant", "[תמונה נוצרה: " + msg + "]", model="nvidia-flux")
+                log_image(u["user_id"], msg, url, "image-gen")
+                save_message(cid, "assistant", "[תמונה נוצרה: " + msg + "]", model="image-gen")
                 return json_resp(self, {
                     "ok": True, "reply": "הנה התמונה שיצרתי עבורך:",
                     "images": [{"prompt": msg, "url": url}],
@@ -3095,7 +3101,6 @@ class Handler(BaseHTTPRequestHandler):
         if control_mode and platform != "mobile":
             sys_parts.append(CONTROL_MODE_ADDON)
 
-        # Platform awareness
         if platform == "mobile":
             sys_parts.append("\n=== PLATFORM ===")
             sys_parts.append("The user is on a MOBILE device (phone/tablet).")
