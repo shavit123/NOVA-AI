@@ -1,0 +1,3 @@
+groq
+psycopg2-binary
+requests
