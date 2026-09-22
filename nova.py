@@ -1,5 +1,5 @@
 # ============================================================
-# NOVA v14.5 - Auto Login (Regular User) + 413 Fix
+# NOVA v14.7 - NVIDIA NIM + Mobile Fix
 # Creator: Shavit Klein
 # ============================================================
 import os, sys, json, time, base64, hashlib, secrets, threading, traceback, urllib.parse, re
@@ -14,15 +14,21 @@ try: from groq import Groq
 except ImportError: Groq = None
 
 APP_NAME = "NOVA"
-VERSION = "14.5"
+VERSION = "14.7"
 CREATOR = "Shavit Klein"
 BRAND = "POWERED BY SK"
 HOST = "0.0.0.0"
 PORT = int(os.environ.get("PORT", "8080"))
 
+# === API KEYS ===
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "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").strip()
-FAL_API_KEY  = os.environ.get("FAL_API_KEY", "").strip()
-FAL_MODEL    = "fal-ai/flux/schnell"
+NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "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").strip()
+FAL_API_KEY = os.environ.get("FAL_API_KEY", "bc8f9d7a-fbef-431d-8ff3-11c3f0cf53d6:d9c1a581addeff006f261f8978da680e").strip()
+
+# NVIDIA NIM endpoints
+NVIDIA_FLUX_SCHNELL = "https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-schnell"
+NVIDIA_FLUX_DEV = "https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-dev"
+FAL_MODEL = "fal-ai/flux/schnell"
 
 USE_SQLITE = not os.environ.get("DATABASE_URL")
 SQLITE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nova.db")
@@ -33,7 +39,7 @@ VIP_CODE = os.environ.get("VIP_CODE", "0000")
 ADMIN_USER = os.environ.get("ADMIN_USER", "sk")
 AUTO_USER = "shavit"
 MAX_BODY = 25 * 1024 * 1024
-USAGE = {"tokens": 0, "messages": 0, "total_latency": 0}
+USAGE = {"tokens": 0, "messages": 0, "total_latency": 0, "images": 0}
 GROQ_CLIENT = Groq(api_key=GROQ_API_KEY) if (Groq and GROQ_API_KEY) else None
 
 DEFAULT_SETTINGS = {
@@ -108,7 +114,6 @@ Command patterns:
 - Shell: [CMD]dir[/CMD] | [CMD]ipconfig[/CMD]
 
 ALWAYS confirm to the user what you're doing in THEIR language.
-ALWAYS include [CMD]...[/CMD] when you want to execute something.
 """
 
 
@@ -141,6 +146,34 @@ def detect_image_intent(msg):
         if w in m:
             return True
     return False
+
+
+def translate_to_english(text):
+    """Translate Hebrew/Russian prompt to English for better image gen."""
+    if not text:
+        return text
+    he = len(re.findall(r'[\u0590-\u05FF]', text))
+    ru = len(re.findall(r'[\u0400-\u04FF]', text))
+    if he == 0 and ru == 0:
+        return text
+    if not GROQ_CLIENT:
+        return text
+    try:
+        r = GROQ_CLIENT.chat.completions.create(
+            model="openai/gpt-oss-20b",
+            messages=[
+                {"role": "system", "content": "Translate the user's text to English. Output ONLY the translation, nothing else. Keep it as a short image generation prompt."},
+                {"role": "user", "content": text}
+            ],
+            temperature=0.3,
+            max_tokens=200)
+        translated = (r.choices[0].message.content or "").strip()
+        if translated:
+            log("Translated: " + text[:50] + " -> " + translated[:80])
+            return translated
+    except Exception as e:
+        log("translate: " + str(e), "WARN")
+    return text
 
 
 class _SQLiteCursor:
@@ -424,7 +457,6 @@ def logout_user(tok):
 
 
 def auto_login():
-    """Creates or logs in 'shavit' user automatically — REGULAR user (no admin, no dev, no vip)."""
     c = None; cur = None
     try:
         c = db(); cur = c.cursor()
@@ -462,7 +494,7 @@ def auto_login():
 
 def create_user(username, email, password, fn, ln, phone, gender):
     if len(username) < 3:
-        return {"ok": False, "error": "שם משתמש קצר מדי (3+ תווים)"}
+        return {"ok": False, "error": "שם משתמש קצר מדי"}
     if len(password) < 1:
         return {"ok": False, "error": "חסרה סיסמה"}
     c = None; cur = None
@@ -482,23 +514,9 @@ def create_user(username, email, password, fn, ln, phone, gender):
         row = cur.fetchone()
         uid = row[0] if row else None
         c.commit(); cur.close(); c.close()
-        if not uid:
-            return {"ok": False, "error": "Failed to create user"}
     except Exception as e:
-        try:
-            if c: c.rollback()
-        except:
-            pass
-        try:
-            if cur: cur.close()
-            if c: c.close()
-        except:
-            pass
         return {"ok": False, "error": str(e)[:200]}
-    try:
-        sess = create_session(uid)
-    except:
-        return {"ok": False, "error": "session fail"}
+    sess = create_session(uid)
     dev_tok = create_device_token(uid)
     return {"ok": True, "session": sess, "user_id": uid, "device_token": dev_tok}
 
@@ -522,41 +540,10 @@ def login_user(username, password):
         cur.execute("UPDATE users SET last_login=%s WHERE id=%s", (now(), uid))
         c.commit(); cur.close(); c.close()
     except Exception as e:
-        try:
-            if c: c.rollback()
-        except:
-            pass
-        try:
-            if cur: cur.close()
-            if c: c.close()
-        except:
-            pass
         return {"ok": False, "error": str(e)[:200]}
-    try:
-        sess = create_session(uid)
-    except:
-        return {"ok": False, "error": "session fail"}
+    sess = create_session(uid)
     dev_tok = create_device_token(uid)
     return {"ok": True, "session": sess, "user_id": uid, "device_token": dev_tok}
-
-
-def get_setting(k, d=None):
-    try:
-        c = db(); cur = c.cursor()
-        cur.execute("SELECT value FROM global_settings WHERE key=%s", (k,))
-        r = cur.fetchone(); cur.close(); c.close()
-        return r[0] if r else d
-    except:
-        return d
-
-
-def set_setting(k, v):
-    try:
-        c = db(); cur = c.cursor()
-        cur.execute("INSERT INTO global_settings (key,value) VALUES (%s,%s) ON CONFLICT (key) DO UPDATE SET value=excluded.value", (k, str(v)))
-        c.commit(); cur.close(); c.close()
-    except:
-        pass
 
 
 def get_user_setting(uid, k, d=None):
@@ -846,11 +833,9 @@ def get_stats():
 
 def call_groq(history, model_id, temperature=0.7, max_tokens=2048, system_prompt=None):
     if not GROQ_CLIENT:
-        return {"ok": False, "error": "Groq not configured (missing API key)"}
-    # Trim history to avoid TPM limit (Groq free tier: 8000 TPM)
+        return {"ok": False, "error": "Groq not configured"}
     if len(history) > 14:
         history = history[-14:]
-    # Trim long messages
     trimmed = []
     for h in history:
         c = h.get("content", "") or ""
@@ -870,60 +855,68 @@ def call_groq(history, model_id, temperature=0.7, max_tokens=2048, system_prompt
             temperature=temperature, max_tokens=max_tokens)
         reply = r.choices[0].message.content or ""
         lat = int((time.time() - t0) * 1000)
-        usage = {}
-        if getattr(r, "usage", None):
-            usage = {"prompt_tokens": getattr(r.usage, "prompt_tokens", 0),
-                     "completion_tokens": getattr(r.usage, "completion_tokens", 0)}
         USAGE["messages"] += 1
         USAGE["total_latency"] += lat
-        return {"ok": True, "reply": reply, "latency": lat, "usage": usage}
+        return {"ok": True, "reply": reply, "latency": lat}
     except Exception as e:
         err = str(e)
         log("GROQ: " + err, "ERROR")
         if "413" in err or "too large" in err.lower() or "TPM" in err:
-            return {"ok": False, "error": "ההודעה או ההיסטוריה גדולה מדי. פתח שיחה חדשה ונסה שוב."}
+            return {"ok": False, "error": "ההודעה גדולה מדי. פתח שיחה חדשה ונסה שוב."}
         return {"ok": False, "error": err[:300]}
 
 
-def web_search(query, max_results=5):
-    if not requests:
-        return []
+def generate_image_nvidia(prompt):
+    """Generate image with NVIDIA NIM FLUX.1-schnell."""
+    if not NVIDIA_API_KEY or not requests:
+        return None, "NVIDIA key missing"
     try:
-        url = "https://html.duckduckgo.com/html/"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-        r = requests.post(url, data={"q": query}, headers=headers, timeout=15)
-        if r.status_code != 200:
-            return []
-        html = r.text
-        results = []
-        titles = re.findall(r'<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html, re.DOTALL)
-        snippets = re.findall(r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>', html, re.DOTALL)
-
-        def clean(t):
-            t = re.sub(r'<[^>]+>', '', t)
-            t = t.replace("&amp;", "&").replace("&quot;", '"').replace("&#x27;", "'").replace("&lt;", "<").replace("&gt;", ">")
-            return t.strip()
-
-        for i, (url_raw, title_raw) in enumerate(titles[:max_results]):
-            real_url = url_raw
-            if "uddg=" in url_raw:
-                try:
-                    real_url = urllib.parse.unquote(url_raw.split("uddg=")[1].split("&")[0])
-                except:
-                    pass
-            results.append({"title": clean(title_raw), "url": real_url,
-                            "snippet": clean(snippets[i]) if i < len(snippets) else ""})
-        return results
+        headers = {
+            "Authorization": "Bearer " + NVIDIA_API_KEY,
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+        payload = {
+            "prompt": prompt[:1000],
+            "mode": "base",
+            "seed": 0,
+            "steps": 4,
+            "width": 1024,
+            "height": 1024
+        }
+        r = requests.post(NVIDIA_FLUX_SCHNELL, headers=headers, json=payload, timeout=90)
+        if r.status_code == 200:
+            d = r.json()
+            # NVIDIA returns b64 in 'artifacts' or 'image'
+            artifacts = d.get("artifacts") or []
+            if artifacts:
+                b64 = artifacts[0].get("base64", "")
+                if b64:
+                    return "data:image/png;base64," + b64, None
+            # Alternative format
+            img_b64 = d.get("image") or d.get("b64_json") or ""
+            if img_b64:
+                return "data:image/png;base64," + img_b64, None
+            return None, "NVIDIA: no image in response"
+        else:
+            err = r.text[:200]
+            log("NVIDIA error " + str(r.status_code) + ": " + err, "ERROR")
+            if r.status_code == 401:
+                return None, "NVIDIA key invalid"
+            if r.status_code == 429:
+                return None, "NVIDIA rate limit"
+            return None, "NVIDIA HTTP " + str(r.status_code)
     except Exception as e:
-        log("web_search: " + str(e), "WARN")
-        return []
+        log("NVIDIA exception: " + str(e), "ERROR")
+        return None, "NVIDIA: " + str(e)[:100]
 
 
 def generate_image_fal(prompt):
+    """Fallback: FAL."""
     if FAL_API_KEY and requests:
         url = "https://fal.run/" + FAL_MODEL
         headers = {"Authorization": "Key " + FAL_API_KEY, "Content-Type": "application/json"}
-        payload = {"prompt": prompt[:1000], "image_size": "landscape_4_3",
+        payload = {"prompt": prompt[:1000], "image_size": "square_hd",
                    "num_inference_steps": 4, "num_images": 1, "enable_safety_checker": False}
         try:
             r = requests.post(url, headers=headers, json=payload, timeout=60)
@@ -934,17 +927,48 @@ def generate_image_fal(prompt):
                     return imgs[0].get("url"), None
         except Exception as e:
             log("FAL: " + str(e), "WARN")
-    return generate_image_pollinations(prompt)
+    return None, "FAL failed"
 
 
 def generate_image_pollinations(prompt):
+    """Last resort fallback."""
     try:
         enc = urllib.parse.quote(prompt[:500])
         seed = secrets.randbelow(1000000)
-        url = "https://image.pollinations.ai/prompt/" + enc + "?width=1024&height=768&nologo=true&model=flux&seed=" + str(seed)
+        url = "https://image.pollinations.ai/prompt/" + enc + "?width=1024&height=1024&nologo=true&model=flux&seed=" + str(seed)
         return url, None
     except Exception as e:
         return None, str(e)
+
+
+def generate_image(prompt):
+    """Try NVIDIA first, then FAL, then Pollinations."""
+    # Translate Hebrew/Russian to English for better results
+    en_prompt = translate_to_english(prompt)
+    
+    # Try NVIDIA first
+    url, err = generate_image_nvidia(en_prompt)
+    if url:
+        log("Image generated via NVIDIA")
+        USAGE["images"] += 1
+        return url, None
+    log("NVIDIA failed: " + str(err), "WARN")
+    
+    # Try FAL
+    url, err = generate_image_fal(en_prompt)
+    if url:
+        log("Image generated via FAL")
+        USAGE["images"] += 1
+        return url, None
+    log("FAL failed: " + str(err), "WARN")
+    
+    # Last resort: Pollinations
+    url, err = generate_image_pollinations(en_prompt)
+    if url:
+        log("Image generated via Pollinations")
+        USAGE["images"] += 1
+        return url, None
+    return None, "All image providers failed"
 
 
 def enqueue_agent_command(uid, command, tag="default"):
@@ -1075,8 +1099,11 @@ HTML = r"""<!DOCTYPE html>
 <html lang="he" dir="rtl">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no,maximum-scale=1">
 <meta name="theme-color" content="#0a0a0a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="NOVA">
 <title>NOVA</title>
 <script>
 window.__NOVA_ERR__ = function(msg, url, line, col, err){
@@ -1085,7 +1112,7 @@ window.__NOVA_ERR__ = function(msg, url, line, col, err){
     if (ls) ls.style.display = "none";
     var box = document.createElement("div");
     box.style.cssText = "position:fixed;inset:0;background:#0a0a0a;color:#fca5a5;padding:40px;font-family:monospace;font-size:13px;z-index:99999;overflow:auto;direction:ltr;text-align:left";
-    box.innerHTML = '<h2 style="color:#ef4444;margin-bottom:20px">NOVA - JS Error</h2>' +
+    box.innerHTML = '<h2 style="color:#ef4444;margin-bottom:20px">NOVA - Error</h2>' +
                     '<pre style="white-space:pre-wrap;color:#ededed;font-size:12px">MSG: ' + msg + '\n\nLINE: ' + line + ':' + col + '\n\n' + (err && err.stack ? err.stack : '(no stack)') + '</pre>' +
                     '<button onclick="localStorage.clear();location.reload()" style="margin-top:20px;padding:10px 20px;background:#ef4444;color:white;border:0;border-radius:6px;cursor:pointer;font-size:14px">RESET & RELOAD</button>';
     document.body.appendChild(box);
@@ -1111,7 +1138,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
 font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
 font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased}
 button,input,textarea,select{font:inherit;color:inherit}
-button{border:0;background:none;cursor:pointer}
+button{border:0;background:none;cursor:pointer;touch-action:manipulation}
 .hidden{display:none!important}
 ::-webkit-scrollbar{width:8px;height:8px}
 ::-webkit-scrollbar-thumb{background:#2a2a2a;border-radius:4px}
@@ -1181,7 +1208,7 @@ color:var(--muted);font-size:16px;transition:all .2s}
 .avatar{width:32px;height:32px;border-radius:var(--r-full);background:var(--panel);
 display:grid;place-items:center;margin-right:4px;border:1px solid var(--border2);
 font-weight:500;font-size:12px}
-.chat{flex:1;overflow-y:auto;overflow-x:hidden}
+.chat{flex:1;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch}
 .inner{width:100%;max-width:760px;margin:0 auto;padding:32px 24px 40px;
 display:flex;flex-direction:column;gap:24px}
 .welcome{text-align:center;padding:60px 20px;max-width:600px;margin:auto}
@@ -1237,6 +1264,12 @@ border:1px solid var(--border);cursor:pointer}
 border:1px solid rgba(239,68,68,.3);border-radius:var(--r-md);color:#fca5a5;
 font-size:13px;margin:10px 0;direction:rtl;line-height:1.6}
 .img-error-box b{color:#fff}
+.img-loading-box{padding:20px;background:var(--panel);border:1px solid var(--border2);
+border-radius:var(--r-md);margin:10px 0;text-align:center;color:var(--text2);font-size:13px}
+.img-loading-box .spinner{display:inline-block;width:24px;height:24px;
+border:3px solid var(--border2);border-top-color:var(--text);border-radius:50%;
+animation:spin 0.8s linear infinite;margin-bottom:10px}
+@keyframes spin{to{transform:rotate(360deg)}}
 .thinking{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:14px;padding:4px 0}
 .dots{display:inline-flex;gap:4px}
 .dots i{width:5px;height:5px;border-radius:50%;background:var(--text2);animation:pl 1.2s infinite}
@@ -1261,7 +1294,7 @@ color:var(--muted);flex-shrink:0}
 @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(160,48,48,.6)}
 50%{box-shadow:0 0 0 10px rgba(160,48,48,0)}}
 textarea#input{flex:1;min-height:24px;max-height:200px;resize:none;border:0;
-background:transparent;line-height:1.5;padding:7px 8px;font-size:15px;outline:0}
+background:transparent;line-height:1.5;padding:7px 8px;font-size:16px;outline:0;font-family:inherit}
 textarea#input::placeholder{color:var(--muted2)}
 .send{width:34px;height:34px;border-radius:var(--r-full);background:var(--accent);
 color:var(--accent-fg);display:grid;place-items:center;flex-shrink:0}
@@ -1285,11 +1318,11 @@ border-bottom:1px solid var(--border);position:sticky;top:0;background:inherit;z
 .fd{margin-top:4px;color:var(--muted);font-size:12.5px;line-height:1.5}
 .fr{display:flex;align-items:center;justify-content:space-between;gap:14px}
 .inp,select{background:var(--bg);border:1px solid var(--border2);
-border-radius:var(--r-md);padding:9px 12px;font-size:14px;max-width:100%;outline:0;width:100%}
+border-radius:var(--r-md);padding:9px 12px;font-size:14px;max-width:100%;outline:0;width:100%;font-family:inherit}
 textarea.inp{resize:vertical;min-height:80px;line-height:1.5}
-.btn{padding:9px 16px;border-radius:var(--r-md);font-size:13.5px;font-weight:500}
+.btn{padding:9px 16px;border-radius:var(--r-md);font-size:13.5px;font-weight:500;font-family:inherit;cursor:pointer;border:0}
 .bp{background:var(--accent);color:var(--accent-fg)}
-.bs{background:var(--panel);border:1px solid var(--border2)}
+.bs{background:var(--panel);border:1px solid var(--border2);color:var(--text)}
 .bs.on{background:var(--accent);color:var(--accent-fg);border-color:var(--accent)}
 .sw{position:relative;display:inline-block;width:42px;height:24px;flex-shrink:0}
 .sw input{opacity:0;width:0;height:0}
@@ -1301,7 +1334,7 @@ input:checked + .sl{background:var(--accent)}
 input:checked + .sl:before{transform:translateX(18px);background:var(--accent-fg)}
 .li{display:flex;justify-content:space-between;gap:10px;padding:10px 12px;
 border:1px solid var(--border);border-radius:var(--r-md);margin-bottom:6px;
-background:var(--panel);font-size:13.5px}
+background:var(--panel);font-size:13.5px;color:var(--text2)}
 .li button{color:var(--danger);font-size:16px;padding:0 4px}
 .gallery-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
 .gallery-grid img{width:100%;height:150px;object-fit:cover;border-radius:var(--r-md);
@@ -1323,20 +1356,20 @@ background:var(--panel);border-bottom:1px solid var(--border)}
 .cp-side{width:200px;background:var(--sb);border-left:1px solid var(--border);
 display:flex;flex-direction:column;padding:12px 8px}
 .cp-side button{padding:10px 12px;border-radius:var(--r-md);color:var(--muted);
-font-size:13px;text-align:right;margin-bottom:2px;display:flex;align-items:center;gap:8px}
+font-size:13px;text-align:right;margin-bottom:2px;display:flex;align-items:center;gap:8px;font-family:inherit}
 .cp-side button:hover{background:var(--hover);color:var(--text)}
 .cp-side button.on{background:var(--hover2);color:var(--text)}
-.cp-main{flex:1;overflow-y:auto;padding:20px}
-.cp-main h3{font-size:16px;margin-bottom:4px;font-weight:500}
+.cp-main{flex:1;overflow-y:auto;padding:20px;color:var(--text2)}
+.cp-main h3{font-size:16px;margin-bottom:4px;font-weight:500;color:var(--text)}
 .cp-main .desc{color:var(--muted);font-size:12.5px;margin-bottom:18px}
 .cp-card{background:var(--panel);border:1px solid var(--border);border-radius:var(--r-md);
 padding:16px;margin-bottom:14px}
-.cp-card h4{font-size:14px;margin-bottom:10px;font-weight:500}
+.cp-card h4{font-size:14px;margin-bottom:10px;font-weight:500;color:var(--text)}
 .cp-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;margin-bottom:10px}
-.cp-inp{background:var(--bg);border:1px solid var(--border2);
-border-radius:var(--r-md);padding:10px 12px;font-size:13px;outline:0;width:100%}
+.cp-inp{background:var(--bg);border:1px solid var(--border2);color:var(--text);
+border-radius:var(--r-md);padding:10px 12px;font-size:13px;outline:0;width:100%;font-family:inherit}
 .cp-btn{padding:9px 14px;background:var(--accent);color:var(--accent-fg);
-border-radius:var(--r-md);font-size:12.5px;font-weight:500}
+border-radius:var(--r-md);font-size:12.5px;font-weight:500;font-family:inherit;cursor:pointer;border:0}
 .cp-btn.sec{background:transparent;color:var(--text2);border:1px solid var(--border2)}
 .cp-btn.vip{background:rgba(212,175,55,.2);color:#f5c842;border:1px solid rgba(212,175,55,.4)}
 .cp-btn.vip.on{background:rgba(212,175,55,.9);color:#1a1a1a}
@@ -1347,9 +1380,9 @@ border-radius:var(--r-md);font-size:12.5px;font-weight:500}
 .cp-tasks{max-height:400px;overflow-y:auto}
 .cp-task{background:var(--bg);border:1px solid var(--border);border-radius:var(--r-md);
 padding:10px 12px;margin-bottom:6px;font-size:12.5px}
-.cp-task .cmd{font-family:ui-monospace,monospace;font-size:12px;
+.cp-task .cmd{color:var(--text);font-family:ui-monospace,monospace;font-size:12px;
 margin-bottom:4px;word-break:break-all}
-.cp-task .res{font-family:ui-monospace,monospace;font-size:11.5px;
+.cp-task .res{color:var(--text2);font-family:ui-monospace,monospace;font-size:11.5px;
 white-space:pre-wrap;max-height:120px;overflow-y:auto;background:#050505;
 padding:8px;border-radius:var(--r-sm);margin-top:6px;border:1px solid var(--border)}
 .cp-task .meta{color:var(--muted2);font-size:10.5px;display:flex;gap:10px;margin-top:4px}
@@ -1363,9 +1396,9 @@ font-size:12px;line-height:1.6;overflow-x:auto;white-space:pre;direction:ltr;tex
 .cp-table{width:100%;border-collapse:collapse;font-size:13px}
 .cp-table th{text-align:right;padding:10px 8px;color:var(--muted);font-weight:500;
 font-size:11.5px;border-bottom:1px solid var(--border);letter-spacing:1px;text-transform:uppercase}
-.cp-table td{padding:10px 8px;border-bottom:1px solid var(--border)}
+.cp-table td{padding:10px 8px;border-bottom:1px solid var(--border);color:var(--text2)}
 .cp-table tr:hover td{background:var(--hover)}
-.cp-table .u{font-weight:500}
+.cp-table .u{color:var(--text);font-weight:500}
 .cp-table .pw{font-family:ui-monospace,monospace;font-size:12px;color:#f5c842;
 background:rgba(212,175,55,.08);padding:2px 6px;border-radius:var(--r-sm);cursor:pointer}
 .cp-table .badge{display:inline-block;font-size:9.5px;padding:2px 6px;
@@ -1389,13 +1422,13 @@ border-radius:3px;animation:wave 1.2s ease-in-out infinite}
 .voice-wave span:nth-child(7){animation-delay:.6s}
 .voice-wave span:nth-child(8){animation-delay:.7s}
 @keyframes wave{0%,100%{height:20px;opacity:.4}50%{height:90px;opacity:1}}
-.voice-status{font-size:18px;letter-spacing:2px;margin-bottom:18px;font-weight:500;text-align:center}
-.voice-transcript{max-width:600px;width:100%;text-align:center;font-size:15px;
-line-height:1.6;padding:16px 20px;min-height:60px;direction:rtl;
+.voice-status{font-size:18px;letter-spacing:2px;margin-bottom:18px;font-weight:500;text-align:center;color:var(--text)}
+.voice-transcript{max-width:600px;width:100%;text-align:center;color:var(--text2);
+font-size:15px;line-height:1.6;padding:16px 20px;min-height:60px;direction:rtl;
 background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);
 border-radius:var(--r-md);max-height:50vh;overflow-y:auto;white-space:pre-wrap}
-.voice-close{position:absolute;top:30px;left:30px;width:44px;height:44px;
-border-radius:50%;background:var(--panel);font-size:24px;
+.voice-close{position:absolute;top:calc(30px + env(safe-area-inset-top));left:30px;width:44px;height:44px;
+border-radius:50%;background:var(--panel);color:var(--text);font-size:24px;
 border:1px solid var(--border2);display:grid;place-items:center}
 .voice-close:hover{background:var(--danger);color:#fff}
 .settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
@@ -1417,22 +1450,61 @@ font-size:12.5px;font-weight:600;
 box-shadow:0 4px 16px rgba(0,0,0,.4)}
 @media (max-width:800px){
 .sb{position:fixed;top:0;right:0;bottom:0;width:290px;max-width:88vw;
-transform:translateX(100%);box-shadow:-8px 0 32px rgba(0,0,0,.6)}
+transform:translateX(100%);box-shadow:-8px 0 32px rgba(0,0,0,.6);
+padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}
 .sb.on{transform:translateX(0)}
 .bd{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:25;display:none}
 .bd.on{display:block}
 .menu{display:grid}
-.inner{padding:20px 14px 30px}
-.comp-wrap{padding:8px 12px 12px}
-.cards{grid-template-columns:1fr}
+.top{padding:8px 10px;padding-top:calc(8px + env(safe-area-inset-top));min-height:auto}
+.title{font-size:13px;max-width:100px}
+.right{gap:2px}
+.ibtn{width:34px;height:34px;font-size:15px}
+.avatar{width:30px;height:30px;font-size:11px}
+.inner{padding:16px 12px 24px;gap:18px}
+.comp-wrap{padding:6px 8px 10px;padding-bottom:calc(10px + env(safe-area-inset-bottom))}
+.comp{padding:6px 8px 6px 10px;border-radius:24px;gap:4px}
+.tool{width:34px;height:34px}
+textarea#input{font-size:16px;padding:6px}
+.send{width:32px;height:32px}
+.cards{grid-template-columns:1fr;gap:6px}
+.card{padding:12px 14px;font-size:12.5px}
+.msg{gap:10px}
+.msg .av{width:24px;height:24px;font-size:10px}
+.msg .bub{font-size:14.5px;line-height:1.55}
+.msg.user .bd{max-width:90%}
 .md{padding:0;align-items:flex-end}
-.mbox{border-radius:var(--r-lg) var(--r-lg) 0 0;max-height:92vh}
-.cp-shell{width:100vw;height:95vh;border-radius:var(--r-lg) var(--r-lg) 0 0}
-.cp-side{width:60px;padding:8px 4px}
-.cp-side button{font-size:0;padding:10px 0;justify-content:center}
+.mbox{border-radius:var(--r-lg) var(--r-lg) 0 0;max-height:95vh;
+width:100%;padding-bottom:env(safe-area-inset-bottom)}
+.mhead{padding:14px 16px}
+.mtitle{font-size:14px}
+.mbody{padding:14px 16px}
+.fld{padding:12px 0}
+.ft{font-size:13.5px}
+.inp,select{padding:10px 12px;font-size:16px}
+textarea.inp{min-height:70px;font-size:16px}
+.btn{padding:11px 14px;font-size:13px;min-height:44px}
+.cp-shell{width:100vw;height:100vh;height:100dvh;border-radius:0}
+.cp-side{width:56px;padding:6px 2px}
+.cp-side button{font-size:0;padding:12px 0;justify-content:center;min-height:44px}
 .cp-side button span{display:none}
-.cp-table th,.cp-table td{padding:8px 4px;font-size:11.5px}
+.cp-main{padding:14px 12px}
+.cp-main h3{font-size:15px}
+.cp-card{padding:12px;margin-bottom:10px}
+.cp-table th,.cp-table td{padding:8px 4px;font-size:11px}
 .cp-table .pw{font-size:10px;padding:1px 3px}
+.cp-table .actions{flex-direction:column;gap:3px}
+.cp-btn{padding:7px 10px;font-size:11px;min-height:36px}
+.voice-wave span{width:5px}
+.voice-wave span:nth-child(n+11){display:none}
+.voice-transcript{font-size:14px;max-height:45vh}
+.voice-close{top:20px;left:20px;width:40px;height:40px;font-size:22px}
+.mouse-panel{bottom:80px;left:8px;font-size:11px}
+.tag-color{width:28px;height:28px}
+.gallery-grid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}
+.gallery-grid img{height:120px}
+#controlBtn,#mouseBtn{display:none!important}
+.menu{display:grid}
 }
 </style>
 </head>
@@ -1464,7 +1536,7 @@ transform:translateX(100%);box-shadow:-8px 0 32px rgba(0,0,0,.6)}
 <svg class="ic" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M3 9h18"/></svg>
 <span>CONTROL PANEL</span>
 </button>
-<div class="sb-sign"><b>SHVIT KLEIN</b><br>NOVA v14.5</div>
+<div class="sb-sign"><b>SHVIT KLEIN</b><br>NOVA v14.7</div>
 </div>
 </aside>
 <main class="main">
@@ -1549,7 +1621,7 @@ transform:translateX(100%);box-shadow:-8px 0 32px rgba(0,0,0,.6)}
 <div class="fld"><div class="ft" style="margin-bottom:6px">קול</div>
 <select id="optVoice"><option value="">ברירת מחדל — זיהוי אוטומטי</option></select></div>
 <div class="fld" style="text-align:center;color:var(--muted);font-size:12px;padding-top:20px">
-NOVA v14.5 · <b style="color:var(--text2)">Shavit Klein</b></div>
+NOVA v14.7 · <b style="color:var(--text2)">Shavit Klein</b></div>
 </div></div></div>
 
 <div class="md" id="mdTags"><div class="mbox" style="width:min(420px,100%)">
@@ -1611,7 +1683,7 @@ NOVA v14.5 · <b style="color:var(--text2)">Shavit Klein</b></div>
 <div class="md" id="mdDevPass"><div class="mbox" style="width:min(400px,100%);background:#050505;border-color:rgba(239,68,68,.3)">
 <div class="mhead dev-head"><div class="mtitle">DEVELOPER ACCESS</div><button class="mx" data-close="mdDevPass">×</button></div>
 <div class="mbody" style="text-align:center;padding:32px 24px;background:#050505">
-<div style="font-size:15px;font-weight:500;margin-bottom:6px">גישת מפתח</div>
+<div style="font-size:15px;font-weight:500;margin-bottom:6px;color:var(--text)">גישת מפתח</div>
 <div style="font-size:12.5px;color:var(--muted);margin-bottom:22px">שליטה מלאה במערכת</div>
 <input type="password" class="inp" id="devPwd" placeholder="••••" maxlength="20"
 style="width:100%;text-align:center;font-size:24px;letter-spacing:10px;padding:14px;
@@ -1623,7 +1695,7 @@ background:#0a0a0a;color:#fca5a5;border:1px solid rgba(239,68,68,.3)" autocomple
 <div class="md" id="mdVipPass"><div class="mbox" style="width:min(400px,100%)">
 <div class="mhead"><div class="mtitle">VIP ACCESS</div><button class="mx" data-close="mdVipPass">×</button></div>
 <div class="mbody" style="text-align:center;padding:32px 24px">
-<div style="font-size:15px;font-weight:500;margin-bottom:6px">גישת VIP</div>
+<div style="font-size:15px;font-weight:500;margin-bottom:6px;color:var(--text)">גישת VIP</div>
 <div style="font-size:12.5px;color:var(--muted);margin-bottom:22px">משתמשים מיוחדים</div>
 <input type="password" class="inp" id="vipPwd" placeholder="••••" maxlength="20" style="width:100%;text-align:center;font-size:24px;letter-spacing:10px;padding:14px" autocomplete="off">
 <div id="vipErr" style="color:var(--danger);font-size:12.5px;margin-top:10px;height:16px"></div>
@@ -1726,7 +1798,8 @@ var S = {
   voiceLang: "he-IL",
   voiceName: localStorage.getItem("nova_voice_name") || "",
   voiceRate: parseFloat(localStorage.getItem("nova_voice_rate") || "1.05"),
-  chatTags: {}
+  chatTags: {},
+  isMobile: /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
 };
 window.S = S;
 
@@ -1758,14 +1831,10 @@ function updateUserUI(){
   if (!S.user) return;
   $("sbUser").textContent = S.user.username;
   $("userBtn").textContent = (S.user.username || "?").charAt(0).toUpperCase();
-  // VIP badge — only if actually VIP in DB
   if (S.user.vip) $("vipBadge").classList.remove("hidden"); else $("vipBadge").classList.add("hidden");
-  // DEV badge — only if DEV mode is active
   if (S.devMode) $("devBadge").classList.remove("hidden"); else $("devBadge").classList.add("hidden");
-  // CONTROL PANEL — only if user is admin
-  if (S.user.role === "admin") $("btnControlPanel").classList.remove("hidden");
+  if (S.user.role === "admin" && !S.isMobile) $("btnControlPanel").classList.remove("hidden");
   else $("btnControlPanel").classList.add("hidden");
-  // IMPERSONATE badge
   if (S.impUserId) { $("impBadge").classList.remove("hidden"); $("backImp").classList.remove("hidden"); }
   else { $("impBadge").classList.add("hidden"); $("backImp").classList.add("hidden"); }
 }
@@ -1825,10 +1894,10 @@ function renderWelcome(){
   $("chatInner").innerHTML = '<div class="welcome"><div class="wlogo">N</div><h1>' +
     (dn ? "שלום, " + esc(dn) : "איך אפשר לעזור?") +
     '</h1><p>NOVA מזהה אוטומטית מה אתה צריך. פשוט תכתוב.</p><div class="cards">' +
-    '<button class="card" data-p="פתח צייר"><div class="ct">פתח צייר</div><div class="cd">CONTROL MODE</div></button>' +
-    '<button class="card" data-p="פתח את בלנדר"><div class="ct">פתח בלנדר</div><div class="cd">תלת מימד</div></button>' +
-    '<button class="card" data-p="צור לי תמונה של חתול"><div class="ct">צור תמונה</div><div class="cd">FLUX חינם</div></button>' +
-    '<button class="card" data-p="צלם לי מסך"><div class="ct">צלם מסך</div><div class="cd">screenshot</div></button>' +
+    '<button class="card" data-p="צור לי תמונה של חתול"><div class="ct">צור תמונה</div><div class="cd">FLUX AI</div></button>' +
+    '<button class="card" data-p="ספר לי בדיחה"><div class="ct">ספר בדיחה</div><div class="cd">כיף</div></button>' +
+    '<button class="card" data-p="מה השעה"><div class="ct">מה השעה?</div><div class="cd">מידע</div></button>' +
+    '<button class="card" data-p="תסביר לי בקיצור על בינה מלאכותית"><div class="ct">מה זה AI?</div><div class="cd">לימוד</div></button>' +
     '</div></div>';
   Array.prototype.forEach.call($$(".card"), function(c){
     c.onclick = function(){
@@ -2084,6 +2153,7 @@ async function send(){
   if (low === "/control") {
     $("input").value = ""; updateSend();
     if (!S.devMode) { addMessage("assistant","גישה אסורה. הקלד /sk והזן סיסמה."); return; }
+    if (S.isMobile) { addMessage("assistant","CONTROL MODE זמין רק במחשב."); return; }
     $("mdControlPanel").classList.add("on"); cpLoadUsers(); return;
   }
   if (low === "/vip") {
@@ -2104,7 +2174,9 @@ async function send(){
       files: files.map(function(f){ return {name:f.name, mime:f.mime, data:f.data}; }),
       img_mode: S.imgMode, agent_id: S.agentId,
       deep_think: S.deepThink, web_mode: S.webSearch, model: S.model,
-      control_mode: S.controlMode };
+      control_mode: S.controlMode,
+      platform: S.isMobile ? "mobile" : "desktop",
+      ua: navigator.userAgent.substring(0, 150) };
     var r = await api("/api/chat", {method:"POST", body: JSON.stringify(payload)});
     thinking.remove();
     if (r.images && r.images.length) {
@@ -2325,7 +2397,8 @@ async function sendVoiceMessage(text){
     var r = await api("/api/chat", {method:"POST", body: JSON.stringify({
       chat_id: S.chatId, message: text, files: [], img_mode: false,
       agent_id: S.agentId, voice_mode: true, model: S.model,
-      control_mode: S.controlMode })});
+      control_mode: S.controlMode,
+      platform: S.isMobile ? "mobile" : "desktop" })});
     if (r.reply && r.reply.trim()) {
       addMessage("assistant", r.reply, null, false, false, r.commands);
       $("voiceTranscript").textContent = r.reply;
@@ -2735,7 +2808,8 @@ class Handler(BaseHTTPRequestHandler):
                 return json_resp(self, {
                     "ok": True, "version": VERSION,
                     "db": "sqlite" if USE_SQLITE else "postgres",
-                    "groq": bool(GROQ_CLIENT), "fal": bool(FAL_API_KEY),
+                    "groq": bool(GROQ_CLIENT), "nvidia": bool(NVIDIA_API_KEY),
+                    "fal": bool(FAL_API_KEY),
                     "stats": get_stats(), "usage": USAGE, "time": now()
                 })
             if path == "/api/admin/users":
@@ -2966,6 +3040,8 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_chat(self, u, body):
         cid = body.get("chat_id","")
         msg = (body.get("message","") or "").strip()
+        platform = body.get("platform", "desktop")
+        ua = body.get("ua", "")
         files = body.get("files", []) or []
         img_mode = body.get("img_mode", False)
         agent_id = body.get("agent_id")
@@ -2984,10 +3060,10 @@ class Handler(BaseHTTPRequestHandler):
         wants_image = bool(img_mode) or (msg and detect_image_intent(msg))
 
         if wants_image and msg:
-            url, err = generate_image_fal(msg)
+            url, err = generate_image(msg)
             if url:
-                log_image(u["user_id"], msg, url, FAL_MODEL)
-                save_message(cid, "assistant", "[תמונה נוצרה: " + msg + "]", model=FAL_MODEL)
+                log_image(u["user_id"], msg, url, "nvidia-flux")
+                save_message(cid, "assistant", "[תמונה נוצרה: " + msg + "]", model="nvidia-flux")
                 return json_resp(self, {
                     "ok": True, "reply": "הנה התמונה שיצרתי עבורך:",
                     "images": [{"prompt": msg, "url": url}],
@@ -3016,8 +3092,21 @@ class Handler(BaseHTTPRequestHandler):
         if deep_think:
             sys_parts.append(DEEP_THINK_ADDON)
 
-        if control_mode:
+        if control_mode and platform != "mobile":
             sys_parts.append(CONTROL_MODE_ADDON)
+
+        # Platform awareness
+        if platform == "mobile":
+            sys_parts.append("\n=== PLATFORM ===")
+            sys_parts.append("The user is on a MOBILE device (phone/tablet).")
+            sys_parts.append("IMPORTANT:")
+            sys_parts.append("- Do NOT suggest desktop-only actions (opening programs, file paths, CMD, PowerShell, Control Panel).")
+            sys_parts.append("- CONTROL MODE is NOT available on mobile - do not offer it.")
+            sys_parts.append("- Give short, mobile-friendly answers.")
+            sys_parts.append("- If the user asks to open an app - explain that this requires a desktop.")
+        else:
+            sys_parts.append("\n=== PLATFORM ===")
+            sys_parts.append("The user is on a DESKTOP computer.")
 
         if get_user_setting(u["user_id"], "memory_enabled", "true") == "true":
             mem = memory_ctx(u["user_id"])
@@ -3062,7 +3151,7 @@ class Handler(BaseHTTPRequestHandler):
         reply = result["reply"]
         commands = []
 
-        if control_mode:
+        if control_mode and platform != "mobile":
             pattern = r'\[CMD\](.*?)\[/CMD\]'
             for m in re.finditer(pattern, reply, re.DOTALL):
                 cmd = m.group(1).strip()
@@ -3136,8 +3225,9 @@ def main():
     log(" Creator: " + CREATOR)
     log("=" * 60)
     log(" DB: " + ("SQLite (" + SQLITE_PATH + ")" if USE_SQLITE else "Postgres"))
-    log(" Groq: " + ("OK" if GROQ_CLIENT else "MISSING API KEY"))
-    log(" FAL:  " + ("OK" if FAL_API_KEY else "fallback to Pollinations"))
+    log(" Groq: " + ("OK" if GROQ_CLIENT else "MISSING"))
+    log(" NVIDIA: " + ("OK" if NVIDIA_API_KEY else "MISSING"))
+    log(" FAL: " + ("OK" if FAL_API_KEY else "MISSING"))
     log(" Port: " + str(PORT))
     try:
         init_db()
