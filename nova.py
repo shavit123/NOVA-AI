@@ -1,5 +1,5 @@
 # ============================================================
-# NOVA v14.8 - Fixed web_search + FAL primary
+# NOVA v14.9 - NVIDIA NIM only, mobile fix
 # Creator: Shavit Klein
 # ============================================================
 import os, sys, json, time, base64, hashlib, secrets, threading, traceback, urllib.parse, re
@@ -14,7 +14,7 @@ try: from groq import Groq
 except ImportError: Groq = None
 
 APP_NAME = "NOVA"
-VERSION = "14.8"
+VERSION = "14.9"
 CREATOR = "Shavit Klein"
 BRAND = "POWERED BY SK"
 HOST = "0.0.0.0"
@@ -22,10 +22,8 @@ PORT = int(os.environ.get("PORT", "8080"))
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "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").strip()
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "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").strip()
-FAL_API_KEY = os.environ.get("FAL_API_KEY", "bc8f9d7a-fbef-431d-8ff3-11c3f0cf53d6:d9c1a581addeff006f261f8978da680e").strip()
 
 NVIDIA_FLUX_SCHNELL = "https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-schnell"
-FAL_MODEL = "fal-ai/flux/schnell"
 
 USE_SQLITE = not os.environ.get("DATABASE_URL")
 SQLITE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nova.db")
@@ -896,92 +894,124 @@ def web_search(query, max_results=5):
         return []
 
 
-def generate_image_fal(prompt):
-    if FAL_API_KEY and requests:
-        url = "https://fal.run/" + FAL_MODEL
-        headers = {"Authorization": "Key " + FAL_API_KEY, "Content-Type": "application/json"}
-        payload = {"prompt": prompt[:1000], "image_size": "square_hd",
-                   "num_inference_steps": 4, "num_images": 1, "enable_safety_checker": False}
+def generate_image_nvidia(prompt):
+    """Generate image with NVIDIA NIM FLUX.1-schnell. Handles all response formats."""
+    if not NVIDIA_API_KEY:
+        return None, "NVIDIA key missing"
+    if not requests:
+        return None, "requests module missing"
+
+    headers = {
+        "Authorization": "Bearer " + NVIDIA_API_KEY,
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+    payload = {
+        "prompt": prompt[:1000],
+        "mode": "base",
+        "seed": 0,
+        "steps": 4,
+        "width": 1024,
+        "height": 1024
+    }
+
+    last_err = "unknown"
+    for attempt in range(3):
         try:
-            r = requests.post(url, headers=headers, json=payload, timeout=60)
+            r = requests.post(NVIDIA_FLUX_SCHNELL, headers=headers, json=payload, timeout=120)
             if r.status_code == 200:
                 d = r.json()
+                # Format 1: artifacts[].base64
+                artifacts = d.get("artifacts") or []
+                if artifacts:
+                    b64 = artifacts[0].get("base64", "")
+                    if b64:
+                        return "data:image/png;base64," + b64, None
+                # Format 2: image / b64_json
+                img_b64 = d.get("image") or d.get("b64_json") or ""
+                if img_b64:
+                    if img_b64.startswith("data:"):
+                        return img_b64, None
+                    return "data:image/png;base64," + img_b64, None
+                # Format 3: direct URL
+                url = d.get("url") or d.get("image_url") or ""
+                if url:
+                    return url, None
+                # Format 4: nested images
                 imgs = d.get("images") or []
                 if imgs:
-                    return imgs[0].get("url"), None
+                    first = imgs[0]
+                    if isinstance(first, dict):
+                        u = first.get("url") or first.get("base64")
+                        if u:
+                            if u.startswith("http"):
+                                return u, None
+                            return "data:image/png;base64," + u, None
+                    elif isinstance(first, str):
+                        if first.startswith("http"):
+                            return first, None
+                        return "data:image/png;base64," + first, None
+                # Format 5: status accepted -> polling
+                if d.get("status") == "accepted" or d.get("requestId"):
+                    req_id = d.get("requestId") or d.get("request_id") or ""
+                    if req_id:
+                        # Poll for result
+                        poll_url = NVIDIA_FLUX_SCHNELL + "/" + req_id
+                        for poll_i in range(20):
+                            time.sleep(3)
+                            try:
+                                pr = requests.get(poll_url, headers=headers, timeout=30)
+                                if pr.status_code == 200:
+                                    pd = pr.json()
+                                    if pd.get("status") == "completed":
+                                        p_artifacts = pd.get("artifacts") or []
+                                        if p_artifacts:
+                                            p_b64 = p_artifacts[0].get("base64", "")
+                                            if p_b64:
+                                                return "data:image/png;base64," + p_b64, None
+                                    elif pd.get("status") == "failed":
+                                        return None, "NVIDIA generation failed"
+                            except:
+                                pass
+                        return None, "NVIDIA polling timeout"
+                # Unknown format - log keys
+                log("NVIDIA unknown response keys: " + str(list(d.keys())), "WARN")
+                return None, "NVIDIA returned unknown format"
+            elif r.status_code == 401:
+                return None, "NVIDIA key invalid"
+            elif r.status_code == 429:
+                last_err = "NVIDIA rate limit - נסה שוב בעוד דקה"
+                time.sleep(3)
+                continue
+            else:
+                last_err = "NVIDIA HTTP " + str(r.status_code) + ": " + r.text[:150]
+                log("NVIDIA error: " + last_err, "ERROR")
+                time.sleep(2)
+                continue
+        except requests.exceptions.Timeout:
+            last_err = "NVIDIA timeout - הדגם עמוס, נסה שוב"
+            log("NVIDIA timeout attempt " + str(attempt+1), "WARN")
+            time.sleep(2)
+            continue
         except Exception as e:
-            log("FAL: " + str(e), "WARN")
-    return None, "FAL failed"
+            last_err = "NVIDIA error: " + str(e)[:150]
+            log("NVIDIA exception: " + str(e), "ERROR")
+            time.sleep(2)
+            continue
 
-
-def generate_image_nvidia(prompt):
-    if not NVIDIA_API_KEY or not requests:
-        return None, "NVIDIA key missing"
-    try:
-        headers = {
-            "Authorization": "Bearer " + NVIDIA_API_KEY,
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        }
-        payload = {
-            "prompt": prompt[:1000],
-            "mode": "base",
-            "seed": 0,
-            "steps": 4,
-            "width": 1024,
-            "height": 1024
-        }
-        r = requests.post(NVIDIA_FLUX_SCHNELL, headers=headers, json=payload, timeout=30)
-        if r.status_code == 200:
-            d = r.json()
-            artifacts = d.get("artifacts") or []
-            if artifacts:
-                b64 = artifacts[0].get("base64", "")
-                if b64:
-                    return "data:image/png;base64," + b64, None
-            img_b64 = d.get("image") or d.get("b64_json") or ""
-            if img_b64:
-                return "data:image/png;base64," + img_b64, None
-            return None, "NVIDIA: no image"
-        return None, "NVIDIA HTTP " + str(r.status_code)
-    except Exception as e:
-        log("NVIDIA exception: " + str(e), "ERROR")
-        return None, "NVIDIA: " + str(e)[:100]
-
-
-def generate_image_pollinations(prompt):
-    try:
-        enc = urllib.parse.quote(prompt[:500])
-        seed = secrets.randbelow(1000000)
-        url = "https://image.pollinations.ai/prompt/" + enc + "?width=1024&height=1024&nologo=true&model=flux&seed=" + str(seed)
-        return url, None
-    except Exception as e:
-        return None, str(e)
+    return None, last_err
 
 
 def generate_image(prompt):
+    """NVIDIA only - no Pollinations, no FAL."""
     en_prompt = translate_to_english(prompt)
-    # FAL first
-    url, err = generate_image_fal(en_prompt)
-    if url:
-        log("Image generated via FAL")
-        USAGE["images"] += 1
-        return url, None
-    log("FAL failed: " + str(err), "WARN")
-    # NVIDIA second
     url, err = generate_image_nvidia(en_prompt)
     if url:
         log("Image generated via NVIDIA")
         USAGE["images"] += 1
         return url, None
     log("NVIDIA failed: " + str(err), "WARN")
-    # Pollinations last
-    url, err = generate_image_pollinations(en_prompt)
-    if url:
-        log("Image generated via Pollinations")
-        USAGE["images"] += 1
-        return url, None
-    return None, "All image providers failed"
+    return None, err or "יצירת תמונה נכשלה"
 
 
 def enqueue_agent_command(uid, command, tag="default"):
@@ -1105,10 +1135,7 @@ MANIFEST = {
         {"src": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxOTIgMTkyIj48cmVjdCB3aWR0aD0iMTkyIiBoZWlnaHQ9IjE5MiIgcng9IjI4IiBmaWxsPSIjMGEwYTBhIi8+PHRleHQgeD0iOTYiIHk9IjEzMCIgZm9udC1mYW1pbHk9IkFyaWFsIiBmb250LXNpemU9IjExMCIgZm9udC13ZWlnaHQ9ImJvbGQiIGZpbGw9IiNlZGVkZWQiIHRleHQtYW5jaG9yPSJtaWRkbGUiPk48L3RleHQ+PC9zdmc+", "sizes": "192x192", "type": "image/svg+xml", "purpose": "any maskable"},
         {"src": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MTIgNTEyIj48cmVjdCB3aWR0aD0iNTEyIiBoZWlnaHQ9IjUxMiIgcng9Ijc2IiBmaWxsPSIjMGEwYTBhIi8+PHRleHQgeD0iMjU2IiB5PSIzNDAiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIzMDAiIGZvbnQtd2VpZ2h0PSJib2xkIiBmaWxsPSIjZWRlZGVkIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5OPC90ZXh0Pjwvc3ZnPg==", "sizes": "512x512", "type": "image/svg+xml", "purpose": "any maskable"}
     ]
-}
-
-
-HTML = r"""<!DOCTYPE html>
+}HTML = r"""<!DOCTYPE html>
 <html lang="he" dir="rtl">
 <head>
 <meta charset="UTF-8">
@@ -1542,7 +1569,7 @@ textarea.inp{min-height:70px;font-size:16px}
 <svg class="ic" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M3 9h18"/></svg>
 <span>CONTROL PANEL</span>
 </button>
-<div class="sb-sign"><b>SHVIT KLEIN</b><br>NOVA v14.8</div>
+<div class="sb-sign"><b>SHVIT KLEIN</b><br>NOVA v14.9</div>
 </div>
 </aside>
 <main class="main">
@@ -1627,7 +1654,7 @@ textarea.inp{min-height:70px;font-size:16px}
 <div class="fld"><div class="ft" style="margin-bottom:6px">קול</div>
 <select id="optVoice"><option value="">ברירת מחדל — זיהוי אוטומטי</option></select></div>
 <div class="fld" style="text-align:center;color:var(--muted);font-size:12px;padding-top:20px">
-NOVA v14.8 · <b style="color:var(--text2)">Shavit Klein</b></div>
+NOVA v14.9 · <b style="color:var(--text2)">Shavit Klein</b></div>
 </div></div></div>
 
 <div class="md" id="mdTags"><div class="mbox" style="width:min(420px,100%)">
@@ -1805,7 +1832,8 @@ var S = {
   voiceName: localStorage.getItem("nova_voice_name") || "",
   voiceRate: parseFloat(localStorage.getItem("nova_voice_rate") || "1.05"),
   chatTags: {},
-  isMobile: /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+  isMobile: /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent),
+  sending: false
 };
 window.S = S;
 
@@ -2054,7 +2082,11 @@ $("fileInput").onchange = async function(e){
   renderAtt(); $("fileInput").value = ""; updateSend();
 };
 $("imgBtn").onclick = function(){ S.imgMode = !S.imgMode; $("imgBtn").classList.toggle("on", S.imgMode); };
-function updateSend(){ $("sendBtn").disabled = !$("input").value.trim() && !S.attachments.length; }
+function updateSend(){
+  var hasText = $("input").value.trim().length > 0;
+  var hasAttach = S.attachments.length > 0;
+  $("sendBtn").disabled = (!hasText && !hasAttach) || S.sending;
+}
 $("input").oninput = function(){
   var t = $("input"); t.style.height = "auto";
   t.style.height = Math.min(t.scrollHeight, 200) + "px";
@@ -2137,6 +2169,7 @@ $("modelSelect").onchange = function(e){
 };
 
 async function send(){
+  if (S.sending) return;
   var text = $("input").value.trim();
   if (!text && !S.attachments.length) return;
   var low = text.toLowerCase();
@@ -2170,6 +2203,8 @@ async function send(){
   }
   if (low === "/voice") { startVoice(); $("input").value = ""; updateSend(); return; }
 
+  S.sending = true;
+  updateSend();
   if (!S.chatId) await createNewChat(true);
   var files = S.attachments.slice(); S.attachments = []; renderAtt();
   $("input").value = ""; $("input").style.height = "auto"; updateSend();
@@ -2190,7 +2225,7 @@ async function send(){
     }
     if (r.img_error) {
       var errBox = el("div","msg assistant");
-      errBox.innerHTML = '<div class="av">N</div><div class="bd"><div class="img-error-box"><b>שגיאה</b><br>' + esc(r.img_error) + '</div></div>';
+      errBox.innerHTML = '<div class="av">N</div><div class="bd"><div class="img-error-box"><b>יצירת התמונה נכשלה</b><br>' + esc(r.img_error) + '</div></div>';
       $("chatInner").appendChild(errBox); scrollEnd();
     }
     if ((r.reply && r.reply.trim()) || (r.commands && r.commands.length)) {
@@ -2202,7 +2237,11 @@ async function send(){
     thinking.remove();
     addMessage("assistant","שגיאה: " + e.message);
   }
-  finally { updateSend(); $("input").focus(); }
+  finally {
+    S.sending = false;
+    updateSend();
+    try { $("input").focus(); } catch (ex) {}
+  }
 }
 function addImageCard(prompt, url){
   var m = el("div","msg assistant");
@@ -2744,9 +2783,6 @@ if (document.readyState === "loading") {
 """
 
 
-# ============================================================
-# HTTP HANDLER
-# ============================================================
 class Handler(BaseHTTPRequestHandler):
     server_version = "NOVA/" + VERSION
 
@@ -2814,8 +2850,8 @@ class Handler(BaseHTTPRequestHandler):
                 return json_resp(self, {
                     "ok": True, "version": VERSION,
                     "db": "sqlite" if USE_SQLITE else "postgres",
-                    "groq": bool(GROQ_CLIENT), "nvidia": bool(NVIDIA_API_KEY),
-                    "fal": bool(FAL_API_KEY),
+                    "groq": bool(GROQ_CLIENT),
+                    "nvidia": bool(NVIDIA_API_KEY),
                     "stats": get_stats(), "usage": USAGE, "time": now()
                 })
             if path == "/api/admin/users":
@@ -3068,15 +3104,16 @@ class Handler(BaseHTTPRequestHandler):
         if wants_image and msg:
             url, err = generate_image(msg)
             if url:
-                log_image(u["user_id"], msg, url, "image-gen")
-                save_message(cid, "assistant", "[תמונה נוצרה: " + msg + "]", model="image-gen")
+                log_image(u["user_id"], msg, url, "nvidia-flux")
+                save_message(cid, "assistant", "[תמונה נוצרה: " + msg + "]", model="nvidia-flux")
                 return json_resp(self, {
                     "ok": True, "reply": "הנה התמונה שיצרתי עבורך:",
                     "images": [{"prompt": msg, "url": url}],
                     "lang": detect_lang(msg)
                 })
             else:
-                return json_resp(self, {"ok": True, "reply": "", "img_error": err or "יצירת תמונה נכשלה"})
+                return json_resp(self, {"ok": True, "reply": "",
+                    "img_error": "לא הצלחתי ליצור את התמונה. " + (err or "")})
 
         history = get_history(cid, limit=16) if msg else []
         sys_parts = [BASE_SYSTEM]
@@ -3105,10 +3142,9 @@ class Handler(BaseHTTPRequestHandler):
             sys_parts.append("\n=== PLATFORM ===")
             sys_parts.append("The user is on a MOBILE device (phone/tablet).")
             sys_parts.append("IMPORTANT:")
-            sys_parts.append("- Do NOT suggest desktop-only actions (opening programs, file paths, CMD, PowerShell, Control Panel).")
-            sys_parts.append("- CONTROL MODE is NOT available on mobile - do not offer it.")
+            sys_parts.append("- Do NOT suggest desktop-only actions.")
+            sys_parts.append("- CONTROL MODE is NOT available on mobile.")
             sys_parts.append("- Give short, mobile-friendly answers.")
-            sys_parts.append("- If the user asks to open an app - explain that this requires a desktop.")
         else:
             sys_parts.append("\n=== PLATFORM ===")
             sys_parts.append("The user is on a DESKTOP computer.")
@@ -3221,9 +3257,6 @@ class Handler(BaseHTTPRequestHandler):
             except: pass
 
 
-# ============================================================
-# SERVER BOOT
-# ============================================================
 def main():
     log("=" * 60)
     log(" " + APP_NAME + " v" + VERSION + " - " + BRAND)
@@ -3232,7 +3265,6 @@ def main():
     log(" DB: " + ("SQLite (" + SQLITE_PATH + ")" if USE_SQLITE else "Postgres"))
     log(" Groq: " + ("OK" if GROQ_CLIENT else "MISSING"))
     log(" NVIDIA: " + ("OK" if NVIDIA_API_KEY else "MISSING"))
-    log(" FAL: " + ("OK" if FAL_API_KEY else "MISSING"))
     log(" Port: " + str(PORT))
     try:
         init_db()
