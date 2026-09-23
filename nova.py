@@ -1,6 +1,5 @@
 # ============================================================
 # NOVA v15.0 - Public Edition
-# Creator: Shavit Klein
 # Each user provides their own API keys via .env
 # ============================================================
 import os, sys, json, time, base64, hashlib, secrets, threading, traceback, urllib.parse, re
@@ -14,9 +13,7 @@ except ImportError: requests = None
 try: from groq import Groq
 except ImportError: Groq = None
 
-# ============================================================
-# Load .env file
-# ============================================================
+
 def load_env():
     env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
     if not os.path.exists(env_path):
@@ -36,6 +33,7 @@ def load_env():
     except Exception as e:
         print("[WARN] .env load failed: " + str(e))
 
+
 load_env()
 
 APP_NAME = "NOVA"
@@ -45,7 +43,6 @@ BRAND = "POWERED BY SK"
 HOST = "0.0.0.0"
 PORT = int(os.environ.get("PORT", "8080"))
 
-# === API KEYS - from environment or .env file ===
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "").strip()
 
@@ -471,7 +468,6 @@ def logout_user(tok):
 
 
 def auto_login():
-    """Creates or logs in AUTO_USER automatically - ADMIN user (owner)."""
     c = None; cur = None
     try:
         c = db(); cur = c.cursor()
@@ -1136,7 +1132,6 @@ MANIFEST = {
     ]
 }
 
-
 HTML = r"""<!DOCTYPE html>
 <html lang="he" dir="rtl">
 <head>
@@ -1467,4 +1462,464 @@ border-radius:var(--r-md);max-height:50vh;overflow-y:auto;white-space:pre-wrap}
 border-radius:50%;background:var(--panel);color:var(--text);font-size:24px;
 border:1px solid var(--border2);display:grid;place-items:center}
 .voice-close:hover{background:var(--danger);color:#fff}
-.settings-grid{display:grid;grid-template-columns:1fr 1fr;
+.settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.settings-grid .btn{padding:12px;font-size:13px}
+.mouse-panel{position:fixed;bottom:90px;left:14px;z-index:70;background:rgba(15,15,15,.9);
+border:1px solid var(--border2);border-radius:var(--r-md);padding:10px 12px;
+font-size:11.5px;font-family:ui-monospace,monospace;color:var(--text2);
+backdrop-filter:blur(8px);display:none;min-width:140px}
+.mouse-panel.on{display:block}
+.mouse-panel .row{display:flex;justify-content:space-between;gap:12px;margin-bottom:3px}
+.mouse-panel .row .v{color:#7dd3fc}
+.mouse-dot{position:fixed;width:12px;height:12px;border-radius:50%;
+background:rgba(239,68,68,.4);border:2px solid #fca5a5;pointer-events:none;
+z-index:69;display:none;transition:left .1s,top .1s}
+.mouse-dot.on{display:block}
+.back-imp{position:fixed;top:60px;left:20px;z-index:80;
+padding:8px 14px;border-radius:var(--r-md);background:#a03030;color:#fff;
+font-size:12.5px;font-weight:600;
+box-shadow:0 4px 16px rgba(0,0,0,.4)}
+@media (max-width:800px){
+.sb{position:fixed;top:0;right:0;bottom:0;width:290px;max-width:88vw;
+transform:translateX(100%);box-shadow:-8px 0 32px rgba(0,0,0,.6);
+padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}
+.sb.on{transform:translateX(0)}
+.bd{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:25;display:none}
+.bd.on{display:block}
+.menu{display:grid}
+.top{padding:8px 10px;padding-top:calc(8px + env(safe-area-inset-top));min-height:auto}
+.title{font-size:13px;max-width:100px}
+.right{gap:2px}
+.ibtn{width:34px;height:34px;font-size:15px}
+.avatar{width:30px;height:30px;font-size:11px}
+.inner{padding:16px 12px 24px;gap:18px}
+.comp-wrap{padding:6px 8px 10px;padding-bottom:calc(10px + env(safe-area-inset-bottom))}
+.comp{padding:6px 8px 6px 10px;border-radius:24px;gap:4px}
+.tool{width:34px;height:34px}
+textarea#input{font-size:16px;padding:6px}
+.send{width:32px;height:32px}
+.cards{grid-template-columns:1fr;gap:6px}
+.card{padding:12px 14px;font-size:12.5px}
+.msg{gap:10px}
+.msg .av{width:24px;height:24px;font-size:10px}
+.msg .bub{font-size:14.5px;line-height:1.55}
+.msg.user .bd{max-width:90%}
+.md{padding:0;align-items:flex-end}
+.mbox{border-radius:var(--r-lg) var(--r-lg) 0 0;max-height:95vh;
+width:100%;padding-bottom:env(safe-area-inset-bottom)}
+.mhead{padding:14px 16px}
+.mtitle{font-size:14px}
+.mbody{padding:14px 16px}
+.fld{padding:12px 0}
+.ft{font-size:13.5px}
+.inp,select{padding:10px 12px;font-size:16px}
+textarea.inp{min-height:70px;font-size:16px}
+.btn{padding:11px 14px;font-size:13px;min-height:44px}
+.cp-shell{width:100vw;height:100vh;height:100dvh;border-radius:0}
+.cp-side{width:56px;padding:6px 2px}
+.cp-side button{font-size:0;padding:12px 0;justify-content:center;min-height:44px}
+.cp-side button span{display:none}
+.cp-main{padding:14px 12px}
+.cp-main h3{font-size:15px}
+.cp-card{padding:12px;margin-bottom:10px}
+.cp-table th,.cp-table td{padding:8px 4px;font-size:11px}
+.cp-table .pw{font-size:10px;padding:1px 3px}
+.cp-table .actions{flex-direction:column;gap:3px}
+.cp-btn{padding:7px 10px;font-size:11px;min-height:36px}
+.voice-wave span{width:5px}
+.voice-wave span:nth-child(n+11){display:none}
+.voice-transcript{font-size:14px;max-height:45vh}
+.voice-close{top:20px;left:20px;width:40px;height:40px;font-size:22px}
+.mouse-panel{bottom:80px;left:8px;font-size:11px}
+.tag-color{width:28px;height:28px}
+.gallery-grid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}
+.gallery-grid img{height:120px}
+#controlBtn,#mouseBtn{display:none!important}
+}
+</style>
+</head>
+<body>
+<div class="loading-screen" id="loadingScreen">
+<div class="loading-logo">N</div>
+<div class="loading-text">טוען...</div>
+</div>
+
+<div class="app hidden" id="app">
+<div class="bd" id="bd"></div>
+<aside class="sb" id="sb">
+<div class="sb-top">
+<div class="sb-row">
+<div class="sb-logo">N</div>
+<div class="sb-info">
+<div class="sb-name" id="sbUser">—</div>
+<div class="sb-brand">POWERED BY SK</div>
+</div></div>
+<button class="sb-new" id="btnNew"><svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span>שיחה חדשה</span></button>
+<input class="sb-search" id="chatSearch" placeholder="חיפוש שיחות..." autocomplete="off">
+</div>
+<div class="sb-label">היסטוריה</div>
+<div class="sb-list" id="chatList"></div>
+<div class="sb-bottom">
+<button class="sb-b" id="btnSettings"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4"/></svg> הגדרות</button>
+<button class="sb-b danger" id="btnLogout"><svg class="ic" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/></svg> התנתקות</button>
+<button class="sb-b hidden" id="btnControlPanel" style="color:#fca5a5;border:1px solid rgba(239,68,68,.3);background:rgba(239,68,68,.05);margin-top:4px">
+<svg class="ic" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M3 9h18"/></svg>
+<span>CONTROL PANEL</span>
+</button>
+<div class="sb-sign"><b>NOVA v15.0</b></div>
+</div>
+</aside>
+<main class="main">
+<header class="top">
+<button class="menu" id="menuBtn"><svg class="ic" viewBox="0 0 24 24" style="width:22px;height:22px"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+<div class="title" id="title">NOVA</div>
+<div class="right">
+<span id="impBadge" class="imp-badge hidden">IMPERSONATING</span>
+<span id="devBadge" class="dev-badge hidden">DEV</span>
+<span id="vipBadge" class="vip-badge hidden">VIP</span>
+<button class="ibtn" id="deepBtn" title="חשיבה עמוקה"><svg class="ic" viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 0-7 7c0 3 2 5 3 6v3a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-3c1-1 3-3 3-6a7 7 0 0 0-7-7z"/><line x1="9" y1="17" x2="15" y2="17"/><line x1="10" y1="21" x2="14" y2="21"/></svg></button>
+<button class="ibtn" id="webBtn" title="חיפוש אינטרנט"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></button>
+<button class="ibtn" id="controlBtn" title="CONTROL MODE"><svg class="ic" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></button>
+<button class="ibtn" id="mouseBtn" title="מעקב עכבר"><svg class="ic" viewBox="0 0 24 24"><path d="M12 2a6 6 0 0 1 6 6v8a6 6 0 0 1-12 0V8a6 6 0 0 1 6-6z"/><line x1="12" y1="2" x2="12" y2="10"/></svg></button>
+<button class="ibtn" id="themeBtn"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2"/></svg></button>
+<div class="avatar" id="userBtn">?</div>
+</div>
+</header>
+<button class="back-imp hidden" id="backImp">← חזרה למנהל</button>
+<div class="mouse-panel" id="mousePanel">
+<div class="row"><span>X:</span><span class="v" id="mxVal">—</span></div>
+<div class="row"><span>Y:</span><span class="v" id="myVal">—</span></div>
+<div class="row"><span>מסך:</span><span class="v" id="mwhVal">—</span></div>
+</div>
+<div class="mouse-dot" id="mouseDot"></div>
+<section class="chat" id="chatArea"><div class="inner" id="chatInner"></div></section>
+<div class="comp-wrap">
+<div class="comp-inner">
+<div class="attach" id="attachList"></div>
+<div class="comp">
+<button class="tool" id="fileBtn"><svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+<button class="tool" id="imgBtn" title="מצב תמונה"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></button>
+<button class="tool" id="voiceBtn" title="שיחה קולית"><svg class="ic" viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
+<textarea id="input" rows="1" placeholder="הודעה ל-NOVA" autocomplete="off"></textarea>
+<button class="send" id="sendBtn" disabled><svg class="ic" viewBox="0 0 24 24" style="width:16px;height:16px"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+</div>
+<div class="foot">NOVA יכול לטעות · <b>POWERED BY SK</b></div>
+</div>
+</div>
+<input type="file" id="fileInput" multiple class="hidden">
+</main>
+</div>
+
+<div class="voice-overlay" id="voiceOverlay">
+<div class="voice-wave"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+<div class="voice-status" id="voiceStatus">מקשיב...</div>
+<div class="voice-transcript" id="voiceTranscript"></div>
+<button class="voice-close" id="voiceClose">×</button>
+</div>
+
+<div class="md" id="mdSettings"><div class="mbox">
+<div class="mhead"><div class="mtitle">הגדרות</div><button class="mx" data-close="mdSettings">×</button></div>
+<div class="mbody">
+<div class="fld"><div class="ft" style="margin-bottom:10px">מודל</div>
+<select id="modelSelect">
+<option value="openai/gpt-oss-120b">NOVA Core</option>
+<option value="openai/gpt-oss-20b">NOVA Fast</option>
+<option value="qwen/qwen3.6-27b">NOVA Qwen</option>
+</select></div>
+<div class="fld"><div class="ft" style="margin-bottom:10px">מצבי עבודה</div>
+<div class="settings-grid">
+<button class="bs" id="setDeep" style="padding:12px">חשיבה עמוקה</button>
+<button class="bs" id="setWeb" style="padding:12px">חיפוש אינטרנט</button>
+<button class="bs" id="setControl" style="padding:12px">CONTROL MODE</button>
+<button class="bs" id="setMouse" style="padding:12px">מעקב עכבר</button>
+</div></div>
+<div class="fld"><div class="ft" style="margin-bottom:10px">כלים</div>
+<div class="settings-grid">
+<button class="bs" id="setTags" style="padding:12px">תגיות</button>
+<button class="bs" id="setGallery" style="padding:12px">גלריה</button>
+<button class="bs" id="setMemory" style="padding:12px">זיכרון</button>
+<button class="bs" id="setAgents" style="padding:12px">סוכנים</button>
+<button class="bs" id="setReminders" style="padding:12px">תזכורות</button>
+<button class="bs" id="setFeedback" style="padding:12px">משוב</button>
+</div></div>
+<div class="fld"><div class="fr"><div><div class="ft">זיכרון אוטומטי</div></div>
+<label class="sw"><input type="checkbox" id="optMemory"><span class="sl"></span></label></div></div>
+<div class="fld"><div class="ft" style="margin-bottom:6px">אישיות</div>
+<select id="optPersonality"><option value="default">ברירת מחדל</option><option value="friend">חבר</option><option value="professional">מקצועי</option><option value="teacher">מורה</option><option value="coach">מאמן</option></select></div>
+<div class="fld"><div class="ft" style="margin-bottom:6px">הנחיות אישיות</div>
+<textarea class="inp" id="optProfile" placeholder="איך תרצה ש-NOVA תתנהג?"></textarea></div>
+<div class="fld"><div class="ft" style="margin-bottom:6px">קול</div>
+<select id="optVoice"><option value="">ברירת מחדל — זיהוי אוטומטי</option></select></div>
+</div></div></div>
+
+<div class="md" id="mdTags"><div class="mbox" style="width:min(420px,100%)">
+<div class="mhead"><div class="mtitle">תגיות לשיחה</div><button class="mx" data-close="mdTags">×</button></div>
+<div class="mbody">
+<p style="color:var(--muted);font-size:13px;margin-bottom:12px">בחר צבע תג:</p>
+<div class="tag-colors" id="tagColors"></div>
+<input class="inp" id="tagInput" placeholder="או הקלד טקסט תג" maxlength="40" style="margin-top:8px">
+<button class="btn bp" id="saveTags" style="width:100%;margin-top:12px">שמור תגיות</button>
+</div></div></div>
+
+<div class="md" id="mdMemory"><div class="mbox">
+<div class="mhead"><div class="mtitle">זיכרון</div><button class="mx" data-close="mdMemory">×</button></div>
+<div class="mbody">
+<div style="display:grid;grid-template-columns:130px 1fr 80px;gap:8px;margin-bottom:14px">
+<select id="memCat"><option value="Preference">העדפה</option><option value="Identity">זהות</option><option value="Project">פרויקט</option></select>
+<input class="inp" id="memIn" placeholder="שמור העדפה...">
+<button class="btn bp" id="btnSaveMem">שמור</button>
+</div>
+<div id="memList"></div>
+</div></div></div>
+
+<div class="md" id="mdAgents"><div class="mbox">
+<div class="mhead"><div class="mtitle">סוכנים</div><button class="mx" data-close="mdAgents">×</button></div>
+<div class="mbody">
+<div class="fld">
+<input class="inp" id="agName" placeholder="שם הסוכן" style="margin-bottom:8px">
+<textarea class="inp" id="agPrompt" placeholder="הנחיות..." style="margin-bottom:10px"></textarea>
+<button class="btn bp" id="btnSaveAgent" style="width:100%">שמור סוכן</button>
+</div>
+<div class="fld"><div class="ft" style="margin-bottom:8px">הסוכנים שלי</div><div id="agentsList"></div></div>
+</div></div></div>
+
+<div class="md" id="mdGallery"><div class="mbox" style="width:min(900px,96vw)">
+<div class="mhead"><div class="mtitle">הגלריה שלי</div><button class="mx" data-close="mdGallery">×</button></div>
+<div class="mbody"><div class="gallery-grid" id="galleryGrid"></div></div>
+</div></div>
+
+<div class="md" id="mdReminders"><div class="mbox">
+<div class="mhead"><div class="mtitle">תזכורות</div><button class="mx" data-close="mdReminders">×</button></div>
+<div class="mbody">
+<div style="display:grid;grid-template-columns:1fr 100px 80px;gap:8px;margin-bottom:14px">
+<input class="inp" id="remText" placeholder="מה להזכיר?">
+<input class="inp" id="remMins" type="number" value="10" min="1">
+<button class="btn bp" id="btnSaveRem">הוסף</button>
+</div>
+<div id="remList"></div>
+</div></div></div>
+
+<div class="md" id="mdFeedback"><div class="mbox">
+<div class="mhead"><div class="mtitle">משוב</div><button class="mx" data-close="mdFeedback">×</button></div>
+<div class="mbody">
+<div style="margin-bottom:10px"><select id="fbCategory"><option value="general">כללי</option><option value="bug">באג</option><option value="idea">רעיון</option><option value="praise">פרגון</option></select></div>
+<textarea class="inp" id="fbText" placeholder="כתוב את המשוב..." maxlength="2000" style="margin-bottom:8px"></textarea>
+<button class="btn bp" id="btnSendFb" style="width:100%;margin-bottom:14px">שלח</button>
+<div id="fbList"></div>
+</div></div></div>
+
+<div class="md" id="mdDevPass"><div class="mbox" style="width:min(400px,100%);background:#050505;border-color:rgba(239,68,68,.3)">
+<div class="mhead dev-head"><div class="mtitle">DEVELOPER ACCESS</div><button class="mx" data-close="mdDevPass">×</button></div>
+<div class="mbody" style="text-align:center;padding:32px 24px;background:#050505">
+<div style="font-size:15px;font-weight:500;margin-bottom:6px;color:var(--text)">גישת מפתח</div>
+<div style="font-size:12.5px;color:var(--muted);margin-bottom:22px">שליטה מלאה במערכת</div>
+<input type="password" class="inp" id="devPwd" placeholder="••••" maxlength="20"
+style="width:100%;text-align:center;font-size:24px;letter-spacing:10px;padding:14px;
+background:#0a0a0a;color:#fca5a5;border:1px solid rgba(239,68,68,.3)" autocomplete="off">
+<div id="devErr" style="color:#fca5a5;font-size:12.5px;margin-top:10px;height:16px"></div>
+<button class="btn cp-btn" id="devEnter" style="width:100%;margin-top:12px">הפעל DEV</button>
+</div></div></div>
+
+<div class="md" id="mdVipPass"><div class="mbox" style="width:min(400px,100%)">
+<div class="mhead"><div class="mtitle">VIP ACCESS</div><button class="mx" data-close="mdVipPass">×</button></div>
+<div class="mbody" style="text-align:center;padding:32px 24px">
+<div style="font-size:15px;font-weight:500;margin-bottom:6px;color:var(--text)">גישת VIP</div>
+<div style="font-size:12.5px;color:var(--muted);margin-bottom:22px">משתמשים מיוחדים</div>
+<input type="password" class="inp" id="vipPwd" placeholder="••••" maxlength="20" style="width:100%;text-align:center;font-size:24px;letter-spacing:10px;padding:14px" autocomplete="off">
+<div id="vipErr" style="color:var(--danger);font-size:12.5px;margin-top:10px;height:16px"></div>
+<button class="btn bp" id="vipEnter" style="width:100%;margin-top:12px">הפעל VIP</button>
+</div></div></div>
+
+<div class="md" id="mdControlPanel" style="padding:0;background:rgba(0,0,0,.85)">
+<div class="cp-shell">
+<div class="cp-head">
+<div class="mtitle">CONTROL PANEL</div>
+<button class="mx" data-close="mdControlPanel">×</button>
+</div>
+<div class="cp-body">
+<aside class="cp-side" id="cpSide">
+<button data-tab="users" class="on"><span>משתמשים</span></button>
+<button data-tab="agent"><span>סוכן מקומי</span></button>
+<button data-tab="tasks"><span>משימות</span></button>
+<button data-tab="setup"><span>התקנה</span></button>
+<button data-tab="system"><span>מערכת</span></button>
+</aside>
+<div class="cp-main" id="cpMain">
+<div class="cp-tab" data-tab="users">
+<h3>ניהול משתמשים</h3>
+<div class="desc">לחץ סיסמה להעתקה. VIP / באן / התחזות / מחיקה.</div>
+<div class="cp-card" style="padding:0;overflow:hidden">
+<table class="cp-table">
+<thead><tr><th>משתמש</th><th>סיסמה</th><th>אימייל</th><th>מין</th><th style="text-align:left">פעולות</th></tr></thead>
+<tbody id="cpUserTbody"><tr><td colspan="5" style="text-align:center;padding:20px;color:var(--muted)">טוען...</td></tr></tbody>
+</table>
+</div>
+</div>
+<div class="cp-tab hidden" data-tab="agent">
+<h3>סוכן מקומי</h3>
+<div class="desc">שלח פקודות שירוצו על המחשב שלך דרך AGENT.PY.</div>
+<div class="cp-card">
+<h4>הרצת פקודה</h4>
+<div class="cp-row">
+<input class="cp-inp" id="cpCmd" placeholder="dir | ipconfig | whoami">
+<button class="cp-btn" id="cpRun">הרץ</button>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">
+<button class="cp-btn sec" data-fill="dir">dir</button>
+<button class="cp-btn sec" data-fill="start mspaint">paint</button>
+<button class="cp-btn sec" data-fill="start blender">blender</button>
+<button class="cp-btn sec" data-fill="whoami">whoami</button>
+<button class="cp-btn sec" data-fill="screenshot">screenshot</button>
+<button class="cp-btn sec" data-fill="echo NOVA OK">echo</button>
+</div>
+</div>
+<div class="cp-card">
+<h4>סטטוס</h4>
+<div id="cpAgentStatus" style="color:var(--muted);font-size:13px">ממתין...</div>
+<button class="cp-btn sec" id="cpCheckAgent" style="margin-top:10px">בדוק חיבור</button>
+</div>
+</div>
+<div class="cp-tab hidden" data-tab="tasks">
+<h3>משימות</h3>
+<div class="cp-tasks" id="cpTaskList"><div style="color:var(--muted);font-size:12.5px;padding:20px;text-align:center">אין משימות</div></div>
+<button class="cp-btn sec" id="cpRefreshTasks" style="margin-top:12px">רענן</button>
+</div>
+<div class="cp-tab hidden" data-tab="setup">
+<h3>התקנת הסוכן</h3>
+<div class="desc">קוד מוכן להעתקה. הרץ במחשב שלך ב-CMD.</div>
+<div class="cp-card">
+<h4>AGENT.PY</h4>
+<pre class="cp-code" id="cpAgentCode"></pre>
+<button class="cp-btn sec" id="cpCopyAgent" style="margin-top:10px">העתק קוד מלא</button>
+</div>
+<div class="cp-card"><h4>התקן חבילות</h4><pre class="cp-code">pip install requests pyautogui</pre></div>
+</div>
+<div class="cp-tab hidden" data-tab="system">
+<h3>מידע מערכת</h3>
+<div class="cp-card"><pre class="cp-code" id="cpSysInfo">טוען...</pre></div>
+<button class="cp-btn sec" id="cpSysRefresh" style="margin-top:10px">רענן</button>
+</div>
+</div>
+</div>
+</div>
+</div>
+
+<div class="md" id="mdLightbox" style="background:rgba(0,0,0,.95)">
+<img id="lightboxImg" style="max-width:96vw;max-height:96vh;object-fit:contain;border-radius:8px">
+</div>
+
+<script>
+"use strict";
+
+var S = {
+  token: localStorage.getItem("nova_token") || "",
+  deviceToken: localStorage.getItem("nova_device") || "",
+  adminToken: localStorage.getItem("nova_admin_token") || "",
+  user: null, chatId: null, attachments: [],
+  lastNew: 0, agentId: null,
+  imgMode: false, devMode: false, impUserId: null,
+  deepThink: localStorage.getItem("nova_deep") === "1",
+  webSearch: localStorage.getItem("nova_web") === "1",
+  controlMode: localStorage.getItem("nova_control") === "1",
+  mouseTracking: false, mouseInterval: null,
+  model: localStorage.getItem("nova_model") || "openai/gpt-oss-120b",
+  voiceLang: "he-IL",
+  voiceName: localStorage.getItem("nova_voice_name") || "",
+  voiceRate: parseFloat(localStorage.getItem("nova_voice_rate") || "1.05"),
+  chatTags: {},
+  isMobile: /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent),
+  sending: false
+};
+window.S = S;
+
+function $(id){ return document.getElementById(id); }
+function $$(s){ return document.querySelectorAll(s); }
+function el(t,c,h){ var e=document.createElement(t); if(c)e.className=c; if(h!==undefined)e.innerHTML=h; return e; }
+function esc(s){ return String(s).replace(/[&<>"']/g, function(c){ return ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]); }); }
+var MODE_HE = {General:"כללי", Code:"קוד", Study:"לימוד", Research:"חקר", Creative:"יצירה"};
+var TAG_COLORS = ["#ef4444","#f59e0b","#4ade80","#93c5fd","#a78bfa","#f472b6","#737373"];
+
+async function api(p, o){
+  o = o || {};
+  var h = o.headers || {};
+  if (!(o.body instanceof FormData)) h["Content-Type"] = h["Content-Type"] || "application/json";
+  if (S.token) h["Authorization"] = "Bearer " + S.token;
+  var r;
+  try { r = await fetch(p, Object.assign({}, o, {headers: h})); }
+  catch (netErr) { throw new Error("NETWORK: " + netErr.message); }
+  var d = null;
+  try { d = await r.json(); } catch (e) { throw new Error("Invalid response"); }
+  if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+  if (d.ok === false) throw new Error(d.error || "Failed");
+  return d;
+}
+
+function hideLoading(){ $("loadingScreen").classList.add("hidden"); }
+
+function updateUserUI(){
+  if (!S.user) return;
+  $("sbUser").textContent = S.user.username;
+  $("userBtn").textContent = (S.user.username || "?").charAt(0).toUpperCase();
+  if (S.user.vip) $("vipBadge").classList.remove("hidden"); else $("vipBadge").classList.add("hidden");
+  if (S.devMode) $("devBadge").classList.remove("hidden"); else $("devBadge").classList.add("hidden");
+  if (S.user.role === "admin" && !S.isMobile) $("btnControlPanel").classList.remove("hidden");
+  else $("btnControlPanel").classList.add("hidden");
+  if (S.impUserId) { $("impBadge").classList.remove("hidden"); $("backImp").classList.remove("hidden"); }
+  else { $("impBadge").classList.add("hidden"); $("backImp").classList.add("hidden"); }
+}
+
+async function loadChats(q){
+  q = q || "";
+  try {
+    var url = q ? "/api/search/chats?q=" + encodeURIComponent(q) : "/api/chats";
+    var r = await api(url);
+    var list = $("chatList"); list.innerHTML = "";
+    if (!r.chats.length) {
+      list.innerHTML = '<div style="padding:12px;color:var(--muted2);font-size:12.5px;text-align:center">אין שיחות</div>';
+      return;
+    }
+    r.chats.forEach(function(c){
+      var b = el("button", "chat-item" + (c.id === S.chatId ? " active" : ""));
+      var tagDot = c.tags ? '<span class="tag-dot" style="background:' + (c.tags.split("|")[0] || "var(--muted)") + '"></span>' : '';
+      b.innerHTML = tagDot + '<span class="t">' + esc(c.title) + '</span>';
+      b.onclick = function(){ openChat(c.id); };
+      list.appendChild(b);
+    });
+  } catch (e) { console.error("loadChats:", e); }
+}
+
+$("chatSearch").oninput = function(e){
+  clearTimeout(window._searchTimer);
+  window._searchTimer = setTimeout(function(){ loadChats(e.target.value.trim()); }, 300);
+};# NOVA - AI Assistant
+
+## Features
+- Chat (Hebrew, English, Russian)
+- Image generation (NVIDIA FLUX)
+- Voice mode, memory, agents, CONTROL MODE
+
+## Setup
+
+### 1. Get API Keys (both FREE)
+
+**Groq (chat) - REQUIRED:**
+1. https://console.groq.com/keys
+2. Sign up, Create API Key, copy (starts with `gsk_`)
+
+**NVIDIA (images) - OPTIONAL:**
+1. https://build.nvidia.com
+2. Sign up
+3. https://build.nvidia.com/black-forest-labs/flux_1-schnell
+4. Click "Get API Key", copy (starts with `nvapi-`)
+
+### 2. Run SETUP.BAT
+Double-click it. It will ask for your keys.
+
+### 3. Run START.BAT
+Opens http://localhost:8080
+
+## Commands
+- `/sk` then `2214` - DEV MODE
+- `/vip` then `0000` - VIP
+- `/control` - CONTROL PANEL
+- `/voice` - Voice mode
