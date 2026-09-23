@@ -1891,35 +1891,1388 @@ async function loadChats(q){
 $("chatSearch").oninput = function(e){
   clearTimeout(window._searchTimer);
   window._searchTimer = setTimeout(function(){ loadChats(e.target.value.trim()); }, 300);
-};# NOVA - AI Assistant
+};
+async function createNewChat(force){
+  force = force || false;
+  if (S.chatId && $("chatInner").querySelector(".msg") === null) { $("input").focus(); closeSB(); return; }
+  var t = Date.now();
+  if (!force && t - S.lastNew < 3000) return;
+  S.lastNew = t;
+  try {
+    var r = await api("/api/chats", {method:"POST", body: JSON.stringify({title:"שיחה חדשה"})});
+    S.chatId = r.chat_id; S.agentId = null;
+    $("title").textContent = "שיחה חדשה"; renderWelcome();
+    await loadChats(); $("input").focus();
+  } catch (e) { console.error("createNewChat:", e); }
+}
 
-## Features
-- Chat (Hebrew, English, Russian)
-- Image generation (NVIDIA FLUX)
-- Voice mode, memory, agents, CONTROL MODE
+async function openChat(id){
+  try {
+    var r = await api("/api/chats/" + encodeURIComponent(id));
+    S.chatId = id; S.agentId = r.chat.agent_id || null;
+    $("chatInner").innerHTML = ""; $("title").textContent = r.chat.title;
+    r.messages.forEach(function(m){ addMessage(m.role, m.content, m.id, m.edited, m.favorite); });
+    if (!r.messages.length) renderWelcome();
+    await loadChats($("chatSearch").value.trim()); scrollEnd(true); closeSB();
+  } catch (e) { console.error("openChat:", e); }
+}
 
-## Setup
+function renderWelcome(){
+  var dn = (S.user && S.user.username) || "";
+  $("chatInner").innerHTML = '<div class="welcome"><div class="wlogo">N</div><h1>' +
+    (dn ? "שלום, " + esc(dn) : "איך אפשר לעזור?") +
+    '</h1><p>NOVA מזהה אוטומטית מה אתה צריך. פשוט תכתוב.</p><div class="cards">' +
+    '<button class="card" data-p="צור לי תמונה של חתול"><div class="ct">צור תמונה</div><div class="cd">FLUX AI</div></button>' +
+    '<button class="card" data-p="ספר לי בדיחה"><div class="ct">ספר בדיחה</div><div class="cd">כיף</div></button>' +
+    '<button class="card" data-p="מה השעה"><div class="ct">מה השעה?</div><div class="cd">מידע</div></button>' +
+    '<button class="card" data-p="תסביר לי בקיצור על בינה מלאכותית"><div class="ct">מה זה AI?</div><div class="cd">לימוד</div></button>' +
+    '</div></div>';
+  Array.prototype.forEach.call($$(".card"), function(c){
+    c.onclick = function(){
+      $("input").value = c.dataset.p;
+      $("input").dispatchEvent(new Event("input"));
+      $("input").focus();
+    };
+  });
+}
 
-### 1. Get API Keys (both FREE)
+function detectDir(t){
+  var h = (t.match(/[\u0590-\u05FF]/g) || []).length;
+  var total = t.replace(/\s/g, "").length || 1;
+  return h / total > 0.25 ? "rtl" : "ltr";
+}
 
-**Groq (chat) - REQUIRED:**
-1. https://console.groq.com/keys
-2. Sign up, Create API Key, copy (starts with `gsk_`)
+function md(text){
+  var s = esc(text);
+  s = s.replace(/```(\w*)\n?([\s\S]*?)```/g, function(_, l, c){ return "<pre><code>" + c.trim() + "</code></pre>"; });
+  s = s.replace(/```([\s\S]*?)$/g, function(_, c){ return "<pre><code>" + c.trim() + "</code></pre>"; });
+  s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  s = s.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+  s = s.replace(/^\s*[-*] (.+)$/gm, "<li>$1</li>");
+  s = s.replace(/(<li>[\s\S]*?<\/li>)/g, function(m){ return "<ul>" + m + "</ul>"; });
+  s = s.replace(/(https?:\/\/[^\s<)]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+  return s;
+}
 
-**NVIDIA (images) - OPTIONAL:**
-1. https://build.nvidia.com
-2. Sign up
-3. https://build.nvidia.com/black-forest-labs/flux_1-schnell
-4. Click "Get API Key", copy (starts with `nvapi-`)
+function addMessage(role, content, msgId, edited, favorite, commands){
+  var w = $("chatInner").querySelector(".welcome"); if (w) w.remove();
+  var stick = isNearBottom();
+  var m = el("div", "msg " + (role === "user" ? "user" : "assistant"));
+  m.dataset.msgId = msgId || "";
+  var av = el("div","av"); av.textContent = role === "user" ? "" : "N";
+  var bd = el("div","bd"); var bub = el("div","bub");
+  bub.setAttribute("dir", detectDir(content));
+  if (role === "user") bub.innerHTML = esc(content).replace(/\n/g,"<br>");
+  else bub.innerHTML = md(content);
+  if (edited) {
+    var badge = el("span","edited-badge"); badge.textContent = "(נערך)";
+    bub.appendChild(badge);
+  }
+  if (commands && commands.length) {
+    commands.forEach(function(c){
+      var cmdBadge = el("div","cmd-badge");
+      cmdBadge.textContent = "$ " + c.cmd;
+      bub.appendChild(cmdBadge);
+    });
+  }
+  bd.appendChild(bub);
 
-### 2. Run SETUP.BAT
-Double-click it. It will ask for your keys.
+  if (msgId) {
+    var actions = el("div","actions");
+    var copyBtn = el("button","mini-btn");
+    copyBtn.title = "העתק";
+    var iconCopy = '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+    var iconCheck = '<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>';
+    copyBtn.innerHTML = iconCopy;
+    copyBtn.onclick = function(e){
+      e.stopPropagation();
+      navigator.clipboard.writeText(content).then(function(){
+        copyBtn.innerHTML = iconCheck;
+        setTimeout(function(){ copyBtn.innerHTML = iconCopy; }, 1200);
+      });
+    };
+    actions.appendChild(copyBtn);
 
-### 3. Run START.BAT
-Opens http://localhost:8080
+    var favBtn = el("button","mini-btn" + (favorite ? " fav-on" : ""));
+    favBtn.title = "מועדף";
+    favBtn.innerHTML = '<svg viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>';
+    favBtn.onclick = async function(e){
+      e.stopPropagation();
+      try {
+        var r = await api("/api/message/fav/" + msgId, {method:"POST", body:"{}"});
+        if (r.ok) favBtn.classList.toggle("fav-on", r.favorite);
+      } catch(err) { alert(err.message); }
+    };
+    actions.appendChild(favBtn);
 
-## Commands
-- `/sk` then `2214` - DEV MODE
-- `/vip` then `0000` - VIP
-- `/control` - CONTROL PANEL
-- `/voice` - Voice mode
+    if (role === "user") {
+      var editBtn = el("button","mini-btn");
+      editBtn.title = "ערוך";
+      editBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
+      editBtn.onclick = function(e){
+        e.stopPropagation();
+        var newContent = prompt("ערוך הודעה:", content);
+        if (newContent && newContent.trim() && newContent !== content) {
+          api("/api/message/edit/" + msgId, {method:"POST", body: JSON.stringify({content: newContent})})
+            .then(function(){ openChat(S.chatId); })
+            .catch(function(err){ alert(err.message); });
+        }
+      };
+      actions.appendChild(editBtn);
+    }
+
+    var delBtn = el("button","mini-btn");
+    delBtn.title = "מחק";
+    delBtn.innerHTML = '<svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+    delBtn.onclick = function(e){
+      e.stopPropagation();
+      if (!confirm("למחוק את ההודעה?")) return;
+      api("/api/message/" + msgId, {method:"DELETE"})
+        .then(function(){ m.remove(); })
+        .catch(function(err){ alert(err.message); });
+    };
+    actions.appendChild(delBtn);
+    bd.appendChild(actions);
+  }
+
+  m.appendChild(av); m.appendChild(bd);
+  $("chatInner").appendChild(m);
+  if (stick) scrollEnd();
+  return m;
+}
+
+function addThinking(){
+  var w = $("chatInner").querySelector(".welcome"); if (w) w.remove();
+  var m = el("div","msg assistant");
+  m.innerHTML = '<div class="av">N</div><div class="bd"><div class="bub"><div class="thinking"><span>חושב</span><span class="dots"><i></i><i></i><i></i></span></div></div></div>';
+  $("chatInner").appendChild(m); scrollEnd(); return m;
+}
+function isNearBottom(){ var a = $("chatArea"); return a.scrollHeight - a.scrollTop - a.clientHeight < 150; }
+function scrollEnd(f){
+  f = f || false;
+  if (!f && !isNearBottom()) return;
+  requestAnimationFrame(function(){ $("chatArea").scrollTop = $("chatArea").scrollHeight; });
+}
+
+function renderAtt(){
+  var box = $("attachList"); box.innerHTML = "";
+  S.attachments.forEach(function(f, i){
+    var a = el("div","att");
+    a.innerHTML = "<span>" + esc(f.name) + '</span><button data-i="' + i + '">×</button>';
+    a.querySelector("button").onclick = function(){ S.attachments.splice(i,1); renderAtt(); updateSend(); };
+    box.appendChild(a);
+  });
+}
+function readFile(f){ return new Promise(function(res, rej){ var r = new FileReader(); r.onload = function(){ res(r.result); }; r.onerror = function(){ rej(new Error("read failed")); }; r.readAsDataURL(f); }); }
+$("fileBtn").onclick = function(){ $("fileInput").click(); };
+$("fileInput").onchange = async function(e){
+  var fs = Array.prototype.slice.call(e.target.files);
+  for (var i = 0; i < fs.length; i++) {
+    var f = fs[i];
+    if (f.size > 10 * 1024 * 1024) { alert(f.name + " גדול מדי"); continue; }
+    var data = await readFile(f);
+    S.attachments.push({name: f.name, mime: f.type || "application/octet-stream", data: data});
+  }
+  renderAtt(); $("fileInput").value = ""; updateSend();
+};
+$("imgBtn").onclick = function(){ S.imgMode = !S.imgMode; $("imgBtn").classList.toggle("on", S.imgMode); };
+function updateSend(){
+  var hasText = $("input").value.trim().length > 0;
+  var hasAttach = S.attachments.length > 0;
+  $("sendBtn").disabled = (!hasText && !hasAttach) || S.sending;
+}
+$("input").oninput = function(){
+  var t = $("input"); t.style.height = "auto";
+  t.style.height = Math.min(t.scrollHeight, 200) + "px";
+  updateSend();
+};
+$("input").onkeydown = function(e){
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+};
+$("sendBtn").onclick = send;
+
+function updateToggles(){
+  $("deepBtn").classList.toggle("deep-on", S.deepThink);
+  $("webBtn").classList.toggle("web-on", S.webSearch);
+  $("controlBtn").classList.toggle("control-on", S.controlMode);
+  var sd = $("setDeep"); if (sd) sd.classList.toggle("on", S.deepThink);
+  var sw = $("setWeb"); if (sw) sw.classList.toggle("on", S.webSearch);
+  var sc = $("setControl"); if (sc) sc.classList.toggle("on", S.controlMode);
+  var sm = $("setMouse"); if (sm) sm.classList.toggle("on", S.mouseTracking);
+}
+$("deepBtn").onclick = function(){ S.deepThink = !S.deepThink; localStorage.setItem("nova_deep", S.deepThink ? "1" : "0"); updateToggles(); };
+$("webBtn").onclick = function(){ S.webSearch = !S.webSearch; localStorage.setItem("nova_web", S.webSearch ? "1" : "0"); updateToggles(); };
+$("controlBtn").onclick = function(){
+  S.controlMode = !S.controlMode;
+  localStorage.setItem("nova_control", S.controlMode ? "1" : "0");
+  updateToggles();
+  if (S.controlMode) addMessage("assistant", "CONTROL MODE הופעל.");
+  else addMessage("assistant", "CONTROL MODE כובה.");
+};
+
+$("mouseBtn").onclick = function(){
+  S.mouseTracking = !S.mouseTracking;
+  $("mouseBtn").classList.toggle("web-on", S.mouseTracking);
+  $("mousePanel").classList.toggle("on", S.mouseTracking);
+  $("mouseDot").classList.toggle("on", S.mouseTracking);
+  updateToggles();
+  if (S.mouseTracking) startMouseTracking();
+  else { stopMouseTracking(); $("mxVal").textContent = "—"; $("myVal").textContent = "—"; $("mwhVal").textContent = "—"; }
+};
+function startMouseTracking(){
+  stopMouseTracking();
+  var poll = async function(){
+    if (!S.mouseTracking) return;
+    try {
+      var r = await api("/api/mouse");
+      if (r.pos) {
+        $("mxVal").textContent = r.pos.x;
+        $("myVal").textContent = r.pos.y;
+        $("mwhVal").textContent = r.pos.w + "x" + r.pos.h;
+        var vw = window.innerWidth, vh = window.innerHeight;
+        var px = (r.pos.x / r.pos.w) * vw;
+        var py = (r.pos.y / r.pos.h) * vh;
+        $("mouseDot").style.left = Math.max(0, Math.min(vw - 12, px - 6)) + "px";
+        $("mouseDot").style.top = Math.max(0, Math.min(vh - 12, py - 6)) + "px";
+      }
+    } catch (e) {}
+    if (S.mouseTracking) S.mouseInterval = setTimeout(poll, 400);
+  };
+  poll();
+}
+function stopMouseTracking(){
+  if (S.mouseInterval) { clearTimeout(S.mouseInterval); S.mouseInterval = null; }
+}
+
+$("setDeep").onclick = function(){ $("deepBtn").click(); };
+$("setWeb").onclick = function(){ $("webBtn").click(); };
+$("setControl").onclick = function(){ $("controlBtn").click(); };
+$("setMouse").onclick = function(){ $("mouseBtn").click(); };
+$("setTags").onclick = function(){ $("mdSettings").classList.remove("on"); openTags(); };
+$("setGallery").onclick = function(){ $("mdSettings").classList.remove("on"); openGallery(); };
+$("setMemory").onclick = function(){ $("mdSettings").classList.remove("on"); openMemory(); };
+$("setAgents").onclick = function(){ $("mdSettings").classList.remove("on"); openAgents(); };
+$("setReminders").onclick = function(){ $("mdSettings").classList.remove("on"); openReminders(); };
+$("setFeedback").onclick = function(){ $("mdSettings").classList.remove("on"); openFeedback(); };
+
+$("modelSelect").value = S.model;
+$("modelSelect").onchange = function(e){
+  S.model = e.target.value;
+  localStorage.setItem("nova_model", S.model);
+  api("/api/settings", {method:"POST", body: JSON.stringify({model: S.model})}).catch(function(){});
+};
+
+async function send(){
+  if (S.sending) return;
+  var text = $("input").value.trim();
+  if (!text && !S.attachments.length) return;
+  var low = text.toLowerCase();
+
+  if (low === "/sk" || low === "/dev") {
+    $("input").value = ""; updateSend();
+    $("devPwd").value = ""; $("devErr").textContent = "";
+    $("mdDevPass").classList.add("on"); setTimeout(function(){ $("devPwd").focus(); }, 100);
+    return;
+  }
+  if (text === "2214" && !S.devMode) {
+    $("input").value = ""; updateSend();
+    try {
+      await api("/api/dev/activate", {method:"POST", body: JSON.stringify({password: "2214"})});
+      S.devMode = true; updateUserUI();
+      addMessage("assistant", "DEV MODE פעיל.");
+    } catch (e) { addMessage("assistant", "שגיאה: " + e.message); }
+    return;
+  }
+  if (low === "/control") {
+    $("input").value = ""; updateSend();
+    if (!S.devMode) { addMessage("assistant","גישה אסורה. הקלד /sk והזן סיסמה."); return; }
+    if (S.isMobile) { addMessage("assistant","CONTROL MODE זמין רק במחשב."); return; }
+    $("mdControlPanel").classList.add("on"); cpLoadUsers(); return;
+  }
+  if (low === "/vip") {
+    $("input").value = ""; updateSend();
+    $("vipPwd").value = ""; $("vipErr").textContent = "";
+    $("mdVipPass").classList.add("on"); setTimeout(function(){ $("vipPwd").focus(); }, 100);
+    return;
+  }
+  if (low === "/voice") { startVoice(); $("input").value = ""; updateSend(); return; }
+
+  S.sending = true;
+  updateSend();
+  if (!S.chatId) await createNewChat(true);
+  var files = S.attachments.slice(); S.attachments = []; renderAtt();
+  $("input").value = ""; $("input").style.height = "auto"; updateSend();
+  addMessage("user", text || "(קובץ)");
+  var thinking = addThinking();
+  try {
+    var payload = { chat_id: S.chatId, message: text,
+      files: files.map(function(f){ return {name:f.name, mime:f.mime, data:f.data}; }),
+      img_mode: S.imgMode, agent_id: S.agentId,
+      deep_think: S.deepThink, web_mode: S.webSearch, model: S.model,
+      control_mode: S.controlMode,
+      platform: S.isMobile ? "mobile" : "desktop",
+      ua: navigator.userAgent.substring(0, 150) };
+    var r = await api("/api/chat", {method:"POST", body: JSON.stringify(payload)});
+    thinking.remove();
+    if (r.images && r.images.length) {
+      r.images.forEach(function(img){ addImageCard(img.prompt, img.url); });
+    }
+    if (r.img_error) {
+      var errBox = el("div","msg assistant");
+      errBox.innerHTML = '<div class="av">N</div><div class="bd"><div class="img-error-box"><b>יצירת התמונה נכשלה</b><br>' + esc(r.img_error) + '</div></div>';
+      $("chatInner").appendChild(errBox); scrollEnd();
+    }
+    if ((r.reply && r.reply.trim()) || (r.commands && r.commands.length)) {
+      addMessage("assistant", r.reply || "", null, false, false, r.commands);
+    }
+    if (r.mode) $("title").textContent = MODE_HE[r.mode] || r.mode;
+    await loadChats($("chatSearch").value.trim());
+  } catch (e) {
+    thinking.remove();
+    addMessage("assistant","שגיאה: " + e.message);
+  }
+  finally {
+    S.sending = false;
+    updateSend();
+    try { $("input").focus(); } catch (ex) {}
+  }
+}
+function addImageCard(prompt, url){
+  var m = el("div","msg assistant");
+  m.innerHTML = '<div class="av">N</div><div class="bd"><div class="bub">' +
+    '<div style="font-size:11.5px;color:var(--muted);margin-bottom:8px" dir="ltr">' + esc(prompt) + '</div>' +
+    '<img src="' + url + '" loading="lazy"></div></div>';
+  $("chatInner").appendChild(m);
+  m.querySelector("img").onclick = function(){ $("lightboxImg").src = url; $("mdLightbox").classList.add("on"); };
+  scrollEnd();
+}
+
+$("devEnter").onclick = async function(){
+  var pwd = $("devPwd").value.trim(); if (!pwd) return;
+  try {
+    await api("/api/dev/activate", {method:"POST", body: JSON.stringify({password: pwd})});
+    S.devMode = true; updateUserUI();
+    $("mdDevPass").classList.remove("on");
+    addMessage("assistant", "DEV MODE פעיל. הקלד /control לפתיחת CONTROL PANEL.");
+  } catch (e) { $("devErr").textContent = "סיסמה שגויה"; }
+};
+$("devPwd").onkeydown = function(e){ if (e.key === "Enter") $("devEnter").click(); };
+
+function renderTagColors(){
+  var box = $("tagColors"); box.innerHTML = "";
+  TAG_COLORS.forEach(function(c){
+    var s = el("div","tag-color"); s.style.background = c; s.dataset.color = c;
+    s.onclick = function(){
+      Array.prototype.forEach.call($$(".tag-color"), function(x){ x.classList.remove("selected"); });
+      s.classList.add("selected");
+      var parts = $("tagInput").value.split("|");
+      var current = parts[1] || "";
+      $("tagInput").value = c + "|" + current;
+    };
+    box.appendChild(s);
+  });
+}
+function openTags(){
+  if (!S.chatId) { alert("אין שיחה פעילה"); return; }
+  renderTagColors();
+  $("tagInput").value = S.chatTags[S.chatId] || "";
+  $("mdTags").classList.add("on");
+}
+$("saveTags").onclick = async function(){
+  var tags = $("tagInput").value.trim().slice(0, 200);
+  try {
+    await api("/api/chat/tags/" + S.chatId, {method:"POST", body: JSON.stringify({tags: tags})});
+    S.chatTags[S.chatId] = tags;
+    $("mdTags").classList.remove("on");
+    await loadChats();
+  } catch (e) { alert(e.message); }
+};
+
+async function openMemory(){ await loadMem(); $("mdMemory").classList.add("on"); }
+async function loadMem(){
+  try {
+    var r = await api("/api/memory");
+    var l = $("memList"); l.innerHTML = "";
+    if (!r.memories.length) { l.innerHTML = '<div style="padding:12px;color:var(--muted);text-align:center;font-size:12.5px">אין זיכרונות</div>'; return; }
+    r.memories.forEach(function(m){
+      var it = el("div","li");
+      it.innerHTML = '<span>' + esc(m.text) + '</span><button data-id="' + m.id + '">×</button>';
+      it.querySelector("button").onclick = async function(){ await api("/api/memory/" + m.id, {method:"DELETE"}); await loadMem(); };
+      l.appendChild(it);
+    });
+  } catch (e) { console.error(e); }
+}
+$("btnSaveMem").onclick = async function(){
+  var v = $("memIn").value.trim(); if (!v) return;
+  await api("/api/memory", {method:"POST", body: JSON.stringify({text: v, category: $("memCat").value})});
+  $("memIn").value = ""; await loadMem();
+};
+
+async function openAgents(){ await loadAgents(); $("mdAgents").classList.add("on"); }
+async function loadAgents(){
+  try {
+    var r = await api("/api/agents"); var l = $("agentsList"); l.innerHTML = "";
+    if (!r.agents.length) { l.innerHTML = '<div style="padding:12px;color:var(--muted);text-align:center;font-size:12.5px">אין סוכנים</div>'; return; }
+    r.agents.forEach(function(a){
+      var it = el("div","li");
+      it.innerHTML = '<span style="cursor:pointer;flex:1">' + esc(a.name || "") + '</span><button data-id="' + a.id + '">×</button>';
+      it.querySelector("button").onclick = async function(e){ e.stopPropagation(); await api("/api/agents/" + a.id, {method:"DELETE"}); await loadAgents(); };
+      it.querySelector("span").onclick = function(){ S.agentId = a.id; $("input").value = "[" + a.name + "] "; $("mdAgents").classList.remove("on"); $("input").focus(); };
+      l.appendChild(it);
+    });
+  } catch (e) { console.error(e); }
+}
+$("btnSaveAgent").onclick = async function(){
+  var n = $("agName").value.trim(), p = $("agPrompt").value.trim();
+  if (!n || !p) { alert("מלא שם ופרומפט"); return; }
+  await api("/api/agents", {method:"POST", body: JSON.stringify({name: n, prompt: p})});
+  $("agName").value = ""; $("agPrompt").value = ""; await loadAgents();
+};
+
+async function openGallery(){
+  try {
+    var r = await api("/api/gallery"); var g = $("galleryGrid"); g.innerHTML = "";
+    if (!r.images.length) { g.innerHTML = '<div style="grid-column:1/-1;padding:20px;color:var(--muted);text-align:center;font-size:13px">אין תמונות</div>'; }
+    else {
+      r.images.forEach(function(im){
+        var img = document.createElement("img"); img.src = im.url; img.alt = im.prompt;
+        img.onclick = function(){ $("lightboxImg").src = im.url; $("mdLightbox").classList.add("on"); };
+        g.appendChild(img);
+      });
+    }
+    $("mdGallery").classList.add("on");
+  } catch (e) { alert(e.message); }
+}
+
+async function openReminders(){ await loadRems(); $("mdReminders").classList.add("on"); }
+async function loadRems(){
+  try {
+    var r = await api("/api/reminders"); var l = $("remList"); l.innerHTML = "";
+    if (!r.reminders.length) { l.innerHTML = '<div style="padding:12px;color:var(--muted);text-align:center;font-size:12.5px">אין תזכורות</div>'; return; }
+    r.reminders.forEach(function(x){
+      var d = new Date(x.due_at * 1000).toLocaleString("he-IL");
+      var it = el("div","li");
+      it.innerHTML = '<span>' + esc(x.text) + '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + d + '</div></span><button data-id="' + x.id + '">×</button>';
+      it.querySelector("button").onclick = async function(){ await api("/api/reminders/" + x.id, {method:"DELETE"}); await loadRems(); };
+      l.appendChild(it);
+    });
+  } catch (e) { console.error(e); }
+}
+$("btnSaveRem").onclick = async function(){
+  var t = $("remText").value.trim(); var m = parseInt($("remMins").value) || 10;
+  if (!t) return;
+  await api("/api/reminders", {method:"POST", body: JSON.stringify({text: t, minutes: m})});
+  $("remText").value = ""; await loadRems();
+};
+
+async function openFeedback(){ await loadFb(); $("mdFeedback").classList.add("on"); }
+async function loadFb(){
+  try {
+    var r = await api("/api/feedback"); var l = $("fbList"); l.innerHTML = "";
+    if (!r.feedback.length) { l.innerHTML = '<div style="padding:12px;color:var(--muted);text-align:center;font-size:12.5px">אין משובים</div>'; return; }
+    r.feedback.forEach(function(f){
+      var it = el("div","li");
+      it.innerHTML = '<div style="flex:1"><div>' + esc(f.text) + '</div><div style="font-size:11px;color:var(--muted);margin-top:4px">' + esc(f.category) + '</div></div>';
+      l.appendChild(it);
+    });
+  } catch (e) { console.error(e); }
+}
+$("btnSendFb").onclick = async function(){
+  var t = $("fbText").value.trim(); if (t.length < 3) { alert("קצר מדי"); return; }
+  try {
+    await api("/api/feedback", {method:"POST", body: JSON.stringify({text: t, category: $("fbCategory").value})});
+    $("fbText").value = ""; await loadFb();
+  } catch (e) { alert(e.message); }
+};
+
+var recognition = null, voiceActive = false, voiceFinalText = "", voiceSilenceTimer = null, voiceSpeaking = false;
+var synth = window.speechSynthesis;
+var SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+if (SpeechRec) {
+  recognition = new SpeechRec();
+  recognition.lang = S.voiceLang;
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.onstart = function(){
+    voiceActive = true;
+    $("voiceOverlay").classList.add("on");
+    $("voiceStatus").textContent = "מקשיב...";
+    $("voiceBtn").classList.add("voice-on");
+  };
+  recognition.onresult = function(event){
+    var interim = "";
+    for (var i = event.resultIndex; i < event.results.length; i++) {
+      var tr = event.results[i][0].transcript;
+      if (event.results[i].isFinal) voiceFinalText += tr + " ";
+      else interim += tr;
+    }
+    $("voiceTranscript").textContent = (voiceFinalText + interim).trim();
+    clearTimeout(voiceSilenceTimer);
+    voiceSilenceTimer = setTimeout(function(){
+      var finalMsg = voiceFinalText.trim();
+      if (finalMsg && !voiceSpeaking) {
+        sendVoiceMessage(finalMsg);
+        voiceFinalText = "";
+      }
+    }, 1500);
+  };
+  recognition.onerror = function(e){
+    if (e.error === "no-speech") return;
+    if (e.error === "not-allowed") { $("voiceStatus").textContent = "אין הרשאת מיקרופון"; setTimeout(stopVoice, 2500); return; }
+    $("voiceStatus").textContent = "שגיאה: " + e.error;
+    setTimeout(stopVoice, 2000);
+  };
+  recognition.onend = function(){ if (voiceActive) { try { recognition.start(); } catch (e) {} } };
+}
+
+async function sendVoiceMessage(text){
+  voiceSpeaking = true;
+  $("voiceStatus").textContent = "חושב...";
+  $("voiceTranscript").textContent = "";
+  if (!S.chatId) await createNewChat(true);
+  addMessage("user", text);
+  try {
+    var r = await api("/api/chat", {method:"POST", body: JSON.stringify({
+      chat_id: S.chatId, message: text, files: [], img_mode: false,
+      agent_id: S.agentId, voice_mode: true, model: S.model,
+      control_mode: S.controlMode,
+      platform: S.isMobile ? "mobile" : "desktop" })});
+    if (r.reply && r.reply.trim()) {
+      addMessage("assistant", r.reply, null, false, false, r.commands);
+      $("voiceTranscript").textContent = r.reply;
+      if (r.lang) {
+        S.voiceLang = (r.lang === "ru") ? "ru-RU" : (r.lang === "en") ? "en-US" : "he-IL";
+        if (recognition) recognition.lang = S.voiceLang;
+      }
+      setTimeout(function(){ speakText(r.reply); }, 500);
+    } else {
+      $("voiceStatus").textContent = "מקשיב...";
+      voiceSpeaking = false;
+    }
+    await loadChats();
+  } catch (e) {
+    addMessage("assistant", "שגיאה: " + e.message);
+    $("voiceStatus").textContent = "שגיאה";
+    $("voiceTranscript").textContent = e.message;
+    setTimeout(function(){ voiceSpeaking = false; }, 2500);
+  }
+}
+
+function speakText(text){
+  if (!synth) { voiceSpeaking = false; return; }
+  try { synth.cancel(); } catch (e) {}
+  var clean = text.replace(/```[\s\S]*?```/g, "בלוק קוד").replace(/`([^`]+)`/g, "$1")
+                  .replace(/[*_#>]/g, "").replace(/\n+/g, " ").substring(0, 1500);
+  var utter = new SpeechSynthesisUtterance(clean);
+  utter.lang = S.voiceLang;
+  utter.rate = S.voiceRate;
+  var voices = synth.getVoices();
+  if (S.voiceName) {
+    var chosen = voices.filter(function(v){ return v.name === S.voiceName; })[0];
+    if (chosen) utter.voice = chosen;
+  } else {
+    var prefix = S.voiceLang.split("-")[0];
+    var matchVoice = voices.filter(function(v){ return v.lang && v.lang.toLowerCase().indexOf(prefix) === 0; })[0];
+    if (matchVoice) utter.voice = matchVoice;
+  }
+  utter.onstart = function(){ $("voiceStatus").textContent = "מדבר..."; };
+  utter.onend = function(){
+    $("voiceStatus").textContent = "מקשיב...";
+    voiceSpeaking = false;
+    voiceFinalText = "";
+    if (voiceActive && recognition) {
+      try { recognition.stop(); } catch (e) {}
+      setTimeout(function(){ if (voiceActive) try { recognition.start(); } catch (e) {} }, 300);
+    }
+  };
+  utter.onerror = function(){ voiceSpeaking = false; };
+  try { synth.speak(utter); } catch (e) { voiceSpeaking = false; }
+}
+
+function startVoice(){
+  if (!recognition) { alert("הדפדפן לא תומך בזיהוי דיבור. נסה Chrome/Edge."); return; }
+  if (voiceActive) return;
+  voiceFinalText = "";
+  try { recognition.start(); } catch (e) { console.error(e); }
+}
+function stopVoice(){
+  voiceActive = false; voiceSpeaking = false; voiceFinalText = "";
+  if (voiceSilenceTimer) clearTimeout(voiceSilenceTimer);
+  $("voiceOverlay").classList.remove("on");
+  $("voiceBtn").classList.remove("voice-on");
+  if (synth) { try { synth.cancel(); } catch (e) {} }
+  if (recognition) { try { recognition.stop(); } catch (e) {} }
+}
+$("voiceBtn").onclick = function(){ if (voiceActive) stopVoice(); else startVoice(); };
+$("voiceClose").onclick = stopVoice;
+document.addEventListener("keydown", function(e){ if (e.key === "Escape" && voiceActive) stopVoice(); });
+
+function loadVoices(){
+  if (!synth) return;
+  var voices = synth.getVoices();
+  var sel = $("optVoice"); if (!sel) return;
+  var current = S.voiceName;
+  sel.innerHTML = '<option value="">ברירת מחדל — זיהוי אוטומטי</option>';
+  voices.forEach(function(v){
+    var opt = document.createElement("option");
+    opt.value = v.name; opt.textContent = v.name + " (" + v.lang + ")";
+    if (v.name === current) opt.selected = true;
+    sel.appendChild(opt);
+  });
+}
+if (synth) { synth.onvoiceschanged = loadVoices; setTimeout(loadVoices, 100); }
+$("optVoice").onchange = function(e){ S.voiceName = e.target.value; localStorage.setItem("nova_voice_name", S.voiceName); };
+
+$("btnSettings").onclick = async function(){
+  try {
+    var s = await api("/api/settings");
+    $("optMemory").checked = s.memory_enabled !== "false";
+    $("optPersonality").value = s.personality || "default";
+    $("optProfile").value = s.profile_custom || "";
+    loadVoices();
+    $("modelSelect").value = S.model;
+    updateToggles();
+    $("mdSettings").classList.add("on"); closeSB();
+  } catch (e) { alert(e.message); }
+};
+function saveOpt(k, v){ var o = {}; o[k] = v; api("/api/settings", {method:"POST", body: JSON.stringify(o)}).catch(function(){}); }
+$("optMemory").onchange = function(e){ saveOpt("memory_enabled", e.target.checked ? "true" : "false"); };
+$("optPersonality").onchange = function(e){ saveOpt("personality", e.target.value); };
+$("optProfile").onchange = function(e){ saveOpt("profile_custom", e.target.value); };
+
+$("btnControlPanel").onclick = function(){ $("mdControlPanel").classList.add("on"); closeSB(); cpLoadUsers(); cpLoadTasks(); };
+Array.prototype.forEach.call($$("#cpSide button"), function(b){
+  b.onclick = function(){
+    Array.prototype.forEach.call($$("#cpSide button"), function(x){ x.classList.remove("on"); });
+    b.classList.add("on");
+    var tab = b.dataset.tab;
+    Array.prototype.forEach.call($$(".cp-tab"), function(t){ t.classList.toggle("hidden", t.dataset.tab !== tab); });
+    if (tab === "users") cpLoadUsers();
+    if (tab === "tasks") cpLoadTasks();
+    if (tab === "system") cpLoadSystem();
+  };
+});
+Array.prototype.forEach.call($$("[data-fill]"), function(b){
+  b.onclick = function(){ $("cpCmd").value = b.dataset.fill; };
+});
+
+async function cpLoadUsers(){
+  var tbody = $("cpUserTbody");
+  tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;color:var(--muted)">טוען...</td></tr>';
+  try {
+    var r = await api("/api/admin/users");
+    var users = r.users || [];
+    if (!users.length) { tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;color:var(--muted)">אין משתמשים</td></tr>'; return; }
+    tbody.innerHTML = "";
+    users.forEach(function(u){
+      var tr = document.createElement("tr");
+      var badges = "";
+      if (u.role === "admin") badges += '<span class="badge admin">ADMIN</span>';
+      if (u.vip) badges += '<span class="badge vip">VIP</span>';
+      if (u.banned) badges += '<span class="badge banned">BANNED</span>';
+      var ucell = '<td><div class="u">' + esc(u.username) + '</div>' + badges + '</td>';
+      var pw = u.password || "(hashed)";
+      var pwcell = '<td><span class="pw" data-pw="' + esc(pw) + '">' + esc(pw) + '</span></td>';
+      var ecell = '<td style="font-size:12px">' + esc(u.email || "—") + '</td>';
+      var gmap = {male: "זכר", female: "נקבה", other: "אחר"};
+      var gcell = '<td style="font-size:12px">' + (gmap[u.gender] || u.gender || "—") + '</td>';
+      var act = '<td><div class="actions">' +
+        '<button class="cp-btn vip' + (u.vip ? ' on' : '') + '" data-act="vip" data-id="' + u.id + '" data-val="' + (u.vip ? "0" : "1") + '">VIP</button>' +
+        '<button class="cp-btn ban' + (u.banned ? ' on' : '') + '" data-act="ban" data-id="' + u.id + '" data-val="' + (u.banned ? "0" : "1") + '">' + (u.banned ? "שחרר" : "באן") + '</button>' +
+        '<button class="cp-btn imp" data-act="imp" data-id="' + u.id + '">התחזות</button>' +
+        '<button class="cp-btn del" data-act="del" data-id="' + u.id + '">מחק</button>' +
+        '</div></td>';
+      tr.innerHTML = ucell + pwcell + ecell + gcell + act;
+      tbody.appendChild(tr);
+    });
+    Array.prototype.forEach.call(tbody.querySelectorAll("[data-pw]"), function(sp){
+      sp.onclick = function(){
+        navigator.clipboard.writeText(sp.dataset.pw).then(function(){
+          var orig = sp.textContent; sp.textContent = "הועתק!";
+          setTimeout(function(){ sp.textContent = orig; }, 1200);
+        });
+      };
+    });
+    Array.prototype.forEach.call(tbody.querySelectorAll("[data-act]"), function(btn){
+      btn.onclick = async function(){
+        var act = btn.dataset.act, uid = parseInt(btn.dataset.id), val = btn.dataset.val;
+        if (act === "vip") { try { await api("/api/dev/vip", {method:"POST", body: JSON.stringify({user_id: uid, vip: val === "1"})}); cpLoadUsers(); } catch (e) { alert(e.message); } }
+        else if (act === "ban") { try { await api("/api/dev/ban", {method:"POST", body: JSON.stringify({user_id: uid, banned: val === "1"})}); cpLoadUsers(); } catch (e) { alert(e.message); } }
+        else if (act === "del") {
+          if (!confirm("למחוק את המשתמש?")) return;
+          if (!confirm("בטוח?")) return;
+          try { await api("/api/dev/user/" + uid, {method:"DELETE"}); cpLoadUsers(); } catch (e) { alert(e.message); }
+        } else if (act === "imp") {
+          if (!confirm("להיכנס לחשבון?")) return;
+          try {
+            if (!S.adminToken) { S.adminToken = S.token; localStorage.setItem("nova_admin_token", S.adminToken); }
+            var r = await api("/api/dev/impersonate", {method:"POST", body: JSON.stringify({user_id: uid})});
+            localStorage.setItem("nova_token", r.session.token);
+            S.token = r.session.token; S.impUserId = uid;
+            $("mdControlPanel").classList.remove("on");
+            location.reload();
+          } catch (e) { alert(e.message); }
+        }
+      };
+    });
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;color:#fca5a5">שגיאה: ' + esc(e.message) + '</td></tr>';
+  }
+}
+
+$("backImp").onclick = function(){
+  if (!S.adminToken) return;
+  if (!confirm("לחזור לחשבון המנהל?")) return;
+  localStorage.setItem("nova_token", S.adminToken);
+  localStorage.removeItem("nova_admin_token");
+  location.reload();
+};
+
+$("cpRun").onclick = async function(){
+  var cmd = $("cpCmd").value.trim(); if (!cmd) return;
+  try {
+    await api("/api/agent/command", {method:"POST", body: JSON.stringify({command: cmd, tag: "default"})});
+    $("cpCmd").value = ""; cpLoadTasks();
+    setTimeout(cpLoadTasks, 3000); setTimeout(cpLoadTasks, 8000);
+  } catch (e) { alert(e.message); }
+};
+$("cpCmd").onkeydown = function(e){ if (e.key === "Enter") $("cpRun").click(); };
+async function cpLoadTasks(){
+  try {
+    var r = await api("/api/agent/tasks"); var list = $("cpTaskList");
+    if (!r.tasks || !r.tasks.length) { list.innerHTML = '<div style="color:var(--muted);font-size:12.5px;padding:20px;text-align:center">אין משימות</div>'; return; }
+    list.innerHTML = "";
+    r.tasks.forEach(function(t){
+      var d = el("div","cp-task");
+      var ts = new Date(t.created_at * 1000).toLocaleTimeString("he-IL");
+      d.innerHTML = '<div class="cmd">$ ' + esc(t.command) + '</div>' +
+        '<div class="meta"><span class="cp-status ' + t.status + '">' + t.status + '</span><span>' + ts + '</span><span>#' + t.id + '</span></div>' +
+        (t.result ? '<div class="res">' + esc(t.result) + '</div>' : '');
+      list.appendChild(d);
+    });
+  } catch (e) { console.error(e); }
+}
+$("cpRefreshTasks").onclick = cpLoadTasks;
+$("cpCheckAgent").onclick = async function(){
+  $("cpAgentStatus").textContent = "בודק...";
+  try {
+    await api("/api/agent/command", {method:"POST", body: JSON.stringify({command: "echo NOVA_PING_OK", tag: "default"})});
+    $("cpAgentStatus").innerHTML = '<span style="color:var(--ok)">פקודה נשלחה. תוצאה תוך 5 שניות.</span>';
+    setTimeout(cpLoadTasks, 5000);
+  } catch (e) { $("cpAgentStatus").innerHTML = '<span style="color:#fca5a5">שגיאה: ' + esc(e.message) + '</span>'; }
+};
+
+var AGENT_CODE = 'import time, subprocess, sys, base64, io\n'
+  + 'try:\n    import requests\nexcept ImportError:\n    print("ERROR: pip install requests"); input(); sys.exit(1)\n'
+  + 'try:\n    import pyautogui\n    PYAUTOGUI_OK = True\nexcept ImportError:\n    PYAUTOGUI_OK = False\n'
+  + 'SERVER = "' + (window.location.origin) + '"\n'
+  + 'TOKEN = "PASTE_YOUR_TOKEN_HERE"\nTAG = "default"\n\n'
+  + 'def run_command(cmd):\n    try:\n        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120, encoding="utf-8", errors="replace")\n        out = (r.stdout or "") + (r.stderr or "")\n        return out if out.strip() else "OK"\n    except Exception as e: return "ERROR: " + str(e)\n\n'
+  + 'def screenshot():\n    if not PYAUTOGUI_OK: return "ERROR: pyautogui missing"\n    try:\n        img = pyautogui.screenshot(); buf = io.BytesIO(); img.save(buf, format="PNG")\n        b64 = base64.b64encode(buf.getvalue()).decode()\n        return "SCREENSHOT: " + b64[:200] + "... (size=" + str(len(b64)) + ")"\n    except Exception as e: return "ERROR: " + str(e)\n\n'
+  + 'def handle_special(cmd):\n    low = cmd.lower().strip()\n    if low == "screenshot": return screenshot()\n    if low.startswith("type ") and PYAUTOGUI_OK:\n        try: pyautogui.typewrite(cmd[5:], interval=0.02); return "OK: typed"\n        except Exception as e: return "ERROR: " + str(e)\n    if low.startswith("click ") and PYAUTOGUI_OK:\n        try:\n            p = cmd[6:].split(","); pyautogui.click(int(p[0]), int(p[1])); return "OK: clicked"\n        except Exception as e: return "ERROR: " + str(e)\n    if low.startswith("move ") and PYAUTOGUI_OK:\n        try:\n            p = cmd[5:].split(","); pyautogui.moveTo(int(p[0]), int(p[1])); return "OK: moved"\n        except Exception as e: return "ERROR: " + str(e)\n    if low.startswith("press ") and PYAUTOGUI_OK:\n        try: pyautogui.press(cmd[6:].strip()); return "OK: pressed"\n        except Exception as e: return "ERROR: " + str(e)\n    if low.startswith("hotkey ") and PYAUTOGUI_OK:\n        try:\n            keys = cmd[7:].strip().split("+")\n            pyautogui.hotkey(*keys); return "OK: hotkey"\n        except Exception as e: return "ERROR: " + str(e)\n    return None\n\n'
+  + 'def main_loop():\n    print("=" * 60)\n    print(" NOVA AGENT - Remote Control")\n    print(" Server:", SERVER)\n    print("=" * 60)\n'
+  + '    if TOKEN == "PASTE_YOUR_TOKEN_HERE":\n        print("ERROR: paste your token")\n        input("Enter to exit..."); sys.exit(1)\n'
+  + '    while True:\n        try:\n            r = requests.get(SERVER + "/api/agent/poll", params={"tag": TAG}, headers={"Authorization": "Bearer " + TOKEN}, timeout=30)\n            if r.status_code != 200:\n                time.sleep(3); continue\n            task = r.json().get("task")\n            if not task:\n                time.sleep(1.5); continue\n            tid = task["id"]; cmd = task["command"]\n            print("[TASK #" + str(tid) + "] " + cmd)\n            special = handle_special(cmd)\n            result = special if special else run_command(cmd)\n            requests.post(SERVER + "/api/agent/result", json={"task_id": tid, "result": result}, headers={"Authorization": "Bearer " + TOKEN}, timeout=30)\n            print(" -> sent (" + str(len(result)) + " chars)")\n        except KeyboardInterrupt:\n            print("\\nBye"); sys.exit(0)\n        except Exception as e:\n            print("[ERR] " + str(e)); time.sleep(2)\n\nif __name__ == "__main__":\n    main_loop()\n';
+
+$("cpAgentCode").textContent = AGENT_CODE;
+$("cpCopyAgent").onclick = function(){
+  navigator.clipboard.writeText(AGENT_CODE).then(function(){
+    var b = $("cpCopyAgent");
+    var orig = b.textContent;
+    b.textContent = "הועתק!";
+    setTimeout(function(){ b.textContent = orig; }, 1500);
+  });
+};
+async function cpLoadSystem(){
+  try {
+    var r = await api("/api/diagnostics");
+    $("cpSysInfo").textContent = JSON.stringify(r, null, 2);
+  } catch (e) { $("cpSysInfo").textContent = "Error: " + e.message; }
+}
+$("cpSysRefresh").onclick = cpLoadSystem;
+
+Array.prototype.forEach.call($$("[data-close]"), function(b){
+  b.onclick = function(){
+    var id = b.dataset.close;
+    $(id).classList.remove("on");
+  };
+});
+function closeModOnOutside(id){
+  $(id).onclick = function(e){ if (e.target === $(id)) $(id).classList.remove("on"); };
+}
+["mdSettings","mdTags","mdMemory","mdAgents","mdGallery","mdReminders","mdFeedback","mdDevPass","mdVipPass"].forEach(closeModOnOutside);
+$("mdLightbox").onclick = function(){ $("mdLightbox").classList.remove("on"); };
+
+$("vipEnter").onclick = async function(){
+  var code = $("vipPwd").value.trim(); if (!code) return;
+  try {
+    var r = await api("/api/vip/verify", {method:"POST", body: JSON.stringify({code: code})});
+    if (r.ok) {
+      S.user.vip = true; updateUserUI();
+      $("mdVipPass").classList.remove("on");
+      addMessage("assistant","VIP הופעל בהצלחה.");
+    }
+  } catch (e) { $("vipErr").textContent = e.message; }
+};
+$("vipPwd").onkeydown = function(e){ if (e.key === "Enter") $("vipEnter").click(); };
+
+function closeSB(){
+  if (window.innerWidth <= 800) { $("sb").classList.remove("on"); $("bd").classList.remove("on"); }
+}
+$("menuBtn").onclick = function(){ $("sb").classList.toggle("on"); $("bd").classList.toggle("on"); };
+$("bd").onclick = closeSB;
+
+$("themeBtn").onclick = function(){
+  document.documentElement.classList.toggle("light");
+  var isLight = document.documentElement.classList.contains("light");
+  localStorage.setItem("nova_theme", isLight ? "light" : "dark");
+};
+if (localStorage.getItem("nova_theme") === "light") document.documentElement.classList.add("light");
+
+$("userBtn").onclick = function(){ $("btnSettings").click(); };
+$("btnNew").onclick = function(){ createNewChat(true); };
+
+async function boot(){
+  if (!S.user) return;
+  $("app").classList.remove("hidden");
+  updateUserUI();
+  try { await loadChats(); } catch (e) { console.error("loadChats fail:", e); }
+  renderWelcome();
+  updateToggles();
+  try { $("input").focus(); } catch (e) {}
+}
+
+async function init(){
+  try {
+    var auto = await fetch("/api/auth/auto", {method:"POST", headers:{"Content-Type":"application/json"}, body:"{}"}).then(function(x){return x.json();});
+    if (auto && auto.ok && auto.session && auto.session.token) {
+      S.token = auto.session.token;
+      localStorage.setItem("nova_token", S.token);
+      if (auto.device_token) {
+        S.deviceToken = auto.device_token;
+        localStorage.setItem("nova_device", S.deviceToken);
+      }
+      var v = await api("/api/auth/verify");
+      S.user = v.user;
+      hideLoading();
+      await boot();
+      return;
+    }
+    window.__NOVA_ERR__("Auto-login failed: " + JSON.stringify(auto), "", 0, 0, null);
+  } catch (e) {
+    console.error("FATAL init:", e);
+    window.__NOVA_ERR__("init failed: " + (e && e.message ? e.message : String(e)), "", 0, 0, e);
+  }
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", function(){ setTimeout(init, 30); });
+} else {
+  setTimeout(init, 30);
+}
+</script>
+</body>
+</html>
+"""
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "NOVA/" + VERSION
+
+    def log_message(self, fmt, *args):
+        pass
+
+    def _route(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        method = self.command
+
+        if method == "GET":
+            if path == "/" or path == "/index.html":
+                return html_resp(self, HTML)
+            if path == "/manifest.json":
+                return json_resp(self, MANIFEST)
+            if path == "/favicon.ico":
+                self.send_response(204); self.end_headers(); return
+            if path == "/health":
+                return json_resp(self, {"ok": True, "version": VERSION, "time": now()})
+
+            if path == "/api/auth/verify":
+                u = require_auth(self)
+                return json_resp(self, {"ok": True, "user": u})
+            if path == "/api/chats":
+                u = require_auth(self)
+                return json_resp(self, {"ok": True, "chats": get_chats(u["user_id"])})
+            if path == "/api/search/chats":
+                u = require_auth(self)
+                qs = urllib.parse.parse_qs(parsed.query)
+                q = qs.get("q", [""])[0]
+                return json_resp(self, {"ok": True, "chats": get_chats(u["user_id"], q)})
+            if path.startswith("/api/chats/"):
+                u = require_auth(self)
+                cid = safe_path(path[len("/api/chats/"):])
+                data = get_chat(cid, u["user_id"])
+                if not data:
+                    return json_resp(self, {"ok": False, "error": "Not found"}, 404)
+                return json_resp(self, {"ok": True, **data})
+            if path == "/api/settings":
+                u = require_auth(self)
+                keys = ["memory_enabled","save_history","level","personality",
+                        "profile_custom","model","deep_think","control_mode"]
+                out = {}
+                for k in keys:
+                    out[k] = get_user_setting(u["user_id"], k, DEFAULT_SETTINGS.get(k, ""))
+                return json_resp(self, {"ok": True, **out})
+            if path == "/api/memory":
+                u = require_auth(self)
+                return json_resp(self, {"ok": True, "memories": get_memories(u["user_id"])})
+            if path == "/api/agents":
+                u = require_auth(self)
+                return json_resp(self, {"ok": True, "agents": get_agents(u["user_id"])})
+            if path == "/api/reminders":
+                u = require_auth(self)
+                return json_resp(self, {"ok": True, "reminders": get_reminders(u["user_id"])})
+            if path == "/api/feedback":
+                u = require_auth(self)
+                return json_resp(self, {"ok": True, "feedback": get_user_feedback(u["user_id"])})
+            if path == "/api/gallery":
+                u = require_auth(self)
+                return json_resp(self, {"ok": True, "images": get_user_gallery(u["user_id"])})
+            if path == "/api/diagnostics":
+                u = require_auth(self)
+                return json_resp(self, {
+                    "ok": True, "version": VERSION,
+                    "db": "sqlite" if USE_SQLITE else "postgres",
+                    "groq": bool(GROQ_CLIENT), "nvidia": bool(NVIDIA_API_KEY),
+                    "stats": get_stats(), "usage": USAGE, "time": now()
+                })
+            if path == "/api/admin/users":
+                require_admin(self)
+                return json_resp(self, {"ok": True, "users": get_all_users()})
+            if path == "/api/agent/tasks":
+                u = require_auth(self)
+                return json_resp(self, {"ok": True, "tasks": get_agent_tasks(u["user_id"])})
+            if path == "/api/agent/poll":
+                u = require_auth(self)
+                qs = urllib.parse.parse_qs(parsed.query)
+                tag = qs.get("tag", ["default"])[0]
+                task = poll_agent_command(u["user_id"], tag)
+                return json_resp(self, {"ok": True, "task": task})
+            if path == "/api/mouse":
+                u = require_auth(self)
+                with MOUSE_LOCK:
+                    return json_resp(self, {"ok": True, "pos": dict(MOUSE_POS) if MOUSE_POS else None})
+
+            return json_resp(self, {"ok": False, "error": "Not found"}, 404)
+
+        if method == "POST":
+            try:
+                body = read_json(self)
+            except ValueError as e:
+                return json_resp(self, {"ok": False, "error": str(e)}, 400)
+
+            if path == "/api/auth/auto":
+                r = auto_login()
+                if not r.get("ok"):
+                    return json_resp(self, r, 500)
+                return json_resp(self, {"ok": True, **r})
+
+            if path == "/api/auth/register":
+                r = create_user(
+                    body.get("username","").strip(),
+                    body.get("email","").strip(),
+                    body.get("password",""),
+                    body.get("first_name","").strip(),
+                    body.get("last_name","").strip(),
+                    body.get("phone","").strip(),
+                    body.get("gender","other")
+                )
+                if not r.get("ok"):
+                    return json_resp(self, r, 400)
+                return json_resp(self, {"ok": True, **r})
+
+            if path == "/api/auth/login":
+                r = login_user(body.get("username","").strip(), body.get("password",""))
+                if not r.get("ok"):
+                    return json_resp(self, r, 401)
+                return json_resp(self, {"ok": True, **r})
+
+            if path == "/api/auth/device":
+                uid = verify_device_token(body.get("device_token",""))
+                if not uid:
+                    return json_resp(self, {"ok": False, "error": "Invalid device"}, 401)
+                sess = create_session(uid)
+                return json_resp(self, {"ok": True, "session": sess})
+
+            if path == "/api/auth/logout":
+                logout_user(get_token(self))
+                return json_resp(self, {"ok": True})
+
+            if path == "/api/auth/logout_device":
+                dt = body.get("device_token","")
+                if dt:
+                    try:
+                        c = db(); cur = c.cursor()
+                        cur.execute("DELETE FROM devices WHERE device_token=%s", (dt,))
+                        c.commit(); cur.close(); c.close()
+                    except:
+                        pass
+                return json_resp(self, {"ok": True})
+
+            if path == "/api/vip/verify":
+                u = require_auth(self)
+                if body.get("code","") == VIP_CODE:
+                    set_user_vip(u["user_id"], True)
+                    return json_resp(self, {"ok": True})
+                return json_resp(self, {"ok": False, "error": "קוד שגוי"}, 400)
+
+            if path == "/api/dev/activate":
+                u = require_auth(self)
+                if body.get("password","") == DEV_PASSWORD:
+                    set_user_setting(u["user_id"], "dev_active", "1")
+                    return json_resp(self, {"ok": True})
+                return json_resp(self, {"ok": False, "error": "סיסמה שגויה"}, 403)
+
+            if path == "/api/dev/deactivate":
+                u = require_auth(self)
+                set_user_setting(u["user_id"], "dev_active", "0")
+                return json_resp(self, {"ok": True})
+
+            if path == "/api/dev/vip":
+                require_admin(self)
+                set_user_vip(int(body.get("user_id", 0)), bool(body.get("vip", False)))
+                return json_resp(self, {"ok": True})
+
+            if path == "/api/dev/ban":
+                require_admin(self)
+                set_user_ban(int(body.get("user_id", 0)), bool(body.get("banned", False)))
+                return json_resp(self, {"ok": True})
+
+            if path == "/api/dev/impersonate":
+                admin = require_admin(self)
+                target = int(body.get("user_id", 0))
+                if target == admin["user_id"]:
+                    return json_resp(self, {"ok": False, "error": "Cannot impersonate self"}, 400)
+                sess = create_session(target)
+                return json_resp(self, {"ok": True, "session": sess})
+
+            if path == "/api/settings":
+                u = require_auth(self)
+                for k, v in body.items():
+                    set_user_setting(u["user_id"], k, v)
+                return json_resp(self, {"ok": True})
+
+            if path == "/api/chats":
+                u = require_auth(self)
+                cid = create_chat(u["user_id"], body.get("title","שיחה חדשה"),
+                                  body.get("mode","General"), body.get("agent_id"))
+                return json_resp(self, {"ok": True, "chat_id": cid})
+
+            if path.startswith("/api/chat/tags/"):
+                u = require_auth(self)
+                cid = safe_path(path[len("/api/chat/tags/"):])
+                ok = set_chat_tags(cid, u["user_id"], body.get("tags",""))
+                return json_resp(self, {"ok": ok})
+
+            if path == "/api/memory":
+                u = require_auth(self)
+                add_memory(u["user_id"], body.get("text",""), body.get("category","Preference"))
+                return json_resp(self, {"ok": True})
+
+            if path == "/api/agents":
+                u = require_auth(self)
+                add_agent(u["user_id"], body.get("name",""), body.get("prompt",""))
+                return json_resp(self, {"ok": True})
+
+            if path == "/api/reminders":
+                u = require_auth(self)
+                mins = int(body.get("minutes", 10))
+                add_reminder(u["user_id"], body.get("text",""), now() + mins * 60)
+                return json_resp(self, {"ok": True})
+
+            if path == "/api/feedback":
+                u = require_auth(self)
+                save_feedback(u["user_id"], u["username"], body.get("category","general"), body.get("text",""))
+                return json_resp(self, {"ok": True})
+
+            if path == "/api/agent/command":
+                u = require_auth(self)
+                tid = enqueue_agent_command(u["user_id"], body.get("command",""), body.get("tag","default"))
+                return json_resp(self, {"ok": True, "task_id": tid})
+
+            if path == "/api/agent/result":
+                u = require_auth(self)
+                submit_agent_result(u["user_id"], int(body.get("task_id",0)), body.get("result",""))
+                return json_resp(self, {"ok": True})
+
+            if path.startswith("/api/message/fav/"):
+                u = require_auth(self)
+                mid = int(safe_path(path[len("/api/message/fav/"):]))
+                fav = toggle_fav(mid, u["user_id"])
+                return json_resp(self, {"ok": True, "favorite": fav})
+
+            if path.startswith("/api/message/edit/"):
+                u = require_auth(self)
+                mid = int(safe_path(path[len("/api/message/edit/"):]))
+                ok = edit_message(mid, u["user_id"], body.get("content",""))
+                return json_resp(self, {"ok": ok})
+
+            if path == "/api/chat":
+                u = require_auth(self)
+                return self._handle_chat(u, body)
+
+            return json_resp(self, {"ok": False, "error": "Not found"}, 404)
+
+        if method == "DELETE":
+            if path.startswith("/api/message/"):
+                u = require_auth(self)
+                mid = int(safe_path(path[len("/api/message/"):]))
+                return json_resp(self, {"ok": delete_message(mid, u["user_id"])})
+            if path.startswith("/api/chats/"):
+                u = require_auth(self)
+                cid = safe_path(path[len("/api/chats/"):])
+                delete_chat(cid, u["user_id"])
+                return json_resp(self, {"ok": True})
+            if path.startswith("/api/memory/"):
+                u = require_auth(self)
+                mid = int(safe_path(path[len("/api/memory/"):]))
+                delete_memory(u["user_id"], mid)
+                return json_resp(self, {"ok": True})
+            if path.startswith("/api/agents/"):
+                u = require_auth(self)
+                aid = int(safe_path(path[len("/api/agents/"):]))
+                delete_agent(u["user_id"], aid)
+                return json_resp(self, {"ok": True})
+            if path.startswith("/api/reminders/"):
+                u = require_auth(self)
+                rid = int(safe_path(path[len("/api/reminders/"):]))
+                delete_reminder(u["user_id"], rid)
+                return json_resp(self, {"ok": True})
+            if path.startswith("/api/dev/user/"):
+                require_admin(self)
+                uid = int(safe_path(path[len("/api/dev/user/"):]))
+                delete_user(uid)
+                return json_resp(self, {"ok": True})
+            return json_resp(self, {"ok": False, "error": "Not found"}, 404)
+
+        if method == "PUT" and path == "/api/mouse":
+            u = require_auth(self)
+            try:
+                body = read_json(self)
+            except ValueError:
+                return json_resp(self, {"ok": False, "error": "Bad body"}, 400)
+            with MOUSE_LOCK:
+                MOUSE_POS.clear()
+                MOUSE_POS.update({
+                    "x": int(body.get("x", 0)), "y": int(body.get("y", 0)),
+                    "w": int(body.get("w", 1920)), "h": int(body.get("h", 1080))
+                })
+            return json_resp(self, {"ok": True})
+
+        return json_resp(self, {"ok": False, "error": "Method not allowed"}, 405)
+
+    def _handle_chat(self, u, body):
+        cid = body.get("chat_id","")
+        msg = (body.get("message","") or "").strip()
+        platform = body.get("platform", "desktop")
+        ua = body.get("ua", "")
+        files = body.get("files", []) or []
+        img_mode = body.get("img_mode", False)
+        agent_id = body.get("agent_id")
+        deep_think = body.get("deep_think", False)
+        web_mode = body.get("web_mode", False)
+        model = body.get("model") or "openai/gpt-oss-120b"
+        control_mode = body.get("control_mode", False)
+        voice_mode = body.get("voice_mode", False)
+
+        if not cid:
+            return json_resp(self, {"ok": False, "error": "chat_id required"}, 400)
+
+        if msg:
+            save_message(cid, "user", msg, model=model)
+
+        wants_image = bool(img_mode) or (msg and detect_image_intent(msg))
+
+        if wants_image and msg:
+            url, err = generate_image(msg)
+            if url:
+                log_image(u["user_id"], msg, url, "nvidia-flux")
+                save_message(cid, "assistant", "[תמונה נוצרה: " + msg + "]", model="nvidia-flux")
+                return json_resp(self, {
+                    "ok": True, "reply": "הנה התמונה שיצרתי עבורך:",
+                    "images": [{"prompt": msg, "url": url}],
+                    "lang": detect_lang(msg)
+                })
+            else:
+                return json_resp(self, {"ok": True, "reply": "",
+                    "img_error": "לא הצלחתי ליצור את התמונה. " + (err or "")})
+
+        history = get_history(cid, limit=16) if msg else []
+        sys_parts = [BASE_SYSTEM]
+
+        lang = detect_lang(msg) if msg else "he"
+        if lang == "he":
+            sys_parts.append("Respond in Hebrew.")
+        elif lang == "ru":
+            sys_parts.append("Respond in Russian.")
+        else:
+            sys_parts.append("Respond in English.")
+
+        if get_user_setting(u["user_id"], "dev_active", "0") == "1":
+            sys_parts.append(DEV_SYSTEM_ADDON)
+
+        if u.get("vip"):
+            sys_parts.append(VIP_SYSTEM_ADDON)
+
+        if deep_think:
+            sys_parts.append(DEEP_THINK_ADDON)
+
+        if control_mode and platform != "mobile":
+            sys_parts.append(CONTROL_MODE_ADDON)
+
+        if platform == "mobile":
+            sys_parts.append("\n=== PLATFORM ===")
+            sys_parts.append("The user is on a MOBILE device (phone/tablet).")
+            sys_parts.append("IMPORTANT:")
+            sys_parts.append("- Do NOT suggest desktop-only actions.")
+            sys_parts.append("- CONTROL MODE is NOT available on mobile.")
+            sys_parts.append("- Give short, mobile-friendly answers.")
+        else:
+            sys_parts.append("\n=== PLATFORM ===")
+            sys_parts.append("The user is on a DESKTOP computer.")
+
+        if get_user_setting(u["user_id"], "memory_enabled", "true") == "true":
+            mem = memory_ctx(u["user_id"])
+            if mem:
+                sys_parts.append("\n=== USER MEMORY ===\n" + mem + "\n")
+
+        if agent_id:
+            agents = get_agents(u["user_id"])
+            for a in agents:
+                if a["id"] == agent_id:
+                    sys_parts.append("\n=== AGENT: " + a["name"] + " ===\n" + a["prompt"] + "\n")
+                    break
+
+        if web_mode and msg:
+            results = web_search(msg, max_results=4)
+            if results:
+                search_ctx = "\n=== WEB SEARCH RESULTS ===\n"
+                for r in results:
+                    search_ctx += "- " + r["title"] + ": " + r["snippet"] + "\n  " + r["url"] + "\n"
+                search_ctx += "\nUse these results to answer accurately.\n"
+                sys_parts.append(search_ctx)
+
+        if files:
+            file_ctx = "\n=== ATTACHED FILES ===\n"
+            for f in files[:5]:
+                if (f.get("mime","") or "").startswith("text/"):
+                    try:
+                        b64 = f["data"].split(",", 1)[1] if "," in f["data"] else f["data"]
+                        text_content = base64.b64decode(b64).decode("utf-8", errors="replace")[:1500]
+                        file_ctx += "\n--- " + f["name"] + " ---\n" + text_content + "\n"
+                    except:
+                        pass
+            sys_parts.append(file_ctx)
+
+        system_prompt = "\n".join(sys_parts)
+        result = call_groq(history, model, system_prompt=system_prompt)
+
+        if not result.get("ok"):
+            return json_resp(self, {"ok": True, "reply": "",
+                                    "img_error": "AI error: " + result.get("error","unknown")})
+
+        reply = result["reply"]
+        commands = []
+
+        if control_mode and platform != "mobile":
+            pattern = r'\[CMD\](.*?)\[/CMD\]'
+            for m in re.finditer(pattern, reply, re.DOTALL):
+                cmd = m.group(1).strip()
+                if cmd:
+                    enqueue_agent_command(u["user_id"], cmd, "default")
+                    commands.append({"cmd": cmd, "id": None})
+            reply = re.sub(pattern, "", reply).strip()
+
+        save_message(cid, "assistant", reply, model=model, latency_ms=result.get("latency", 0))
+
+        mode = "General"
+        if "```" in reply:
+            mode = "Code"
+        elif msg and any(w in msg.lower() for w in ["למד","הסבר","מה זה","how","what is"]):
+            mode = "Study"
+
+        return json_resp(self, {
+            "ok": True, "reply": reply, "commands": commands,
+            "mode": mode, "lang": lang, "latency": result.get("latency", 0)
+        })
+
+    def do_GET(self):
+        try:
+            self._route()
+        except PermissionError as e:
+            json_resp(self, {"ok": False, "error": str(e)}, 401)
+        except Exception as e:
+            log("GET " + self.path + ": " + str(e), "ERROR")
+            log(traceback.format_exc(), "ERROR")
+            try: json_resp(self, {"ok": False, "error": str(e)[:200]}, 500)
+            except: pass
+
+    def do_POST(self):
+        try:
+            self._route()
+        except PermissionError as e:
+            json_resp(self, {"ok": False, "error": str(e)}, 401)
+        except Exception as e:
+            log("POST " + self.path + ": " + str(e), "ERROR")
+            log(traceback.format_exc(), "ERROR")
+            try: json_resp(self, {"ok": False, "error": str(e)[:200]}, 500)
+            except: pass
+
+    def do_DELETE(self):
+        try:
+            self._route()
+        except PermissionError as e:
+            json_resp(self, {"ok": False, "error": str(e)}, 401)
+        except Exception as e:
+            log("DELETE " + self.path + ": " + str(e), "ERROR")
+            try: json_resp(self, {"ok": False, "error": str(e)[:200]}, 500)
+            except: pass
+
+    def do_PUT(self):
+        try:
+            self._route()
+        except PermissionError as e:
+            json_resp(self, {"ok": False, "error": str(e)}, 401)
+        except Exception as e:
+            log("PUT " + self.path + ": " + str(e), "ERROR")
+            try: json_resp(self, {"ok": False, "error": str(e)[:200]}, 500)
+            except: pass
+
+
+def main():
+    log("=" * 60)
+    log(" " + APP_NAME + " v" + VERSION + " - " + BRAND)
+    log("=" * 60)
+    log(" DB: " + ("SQLite (" + SQLITE_PATH + ")" if USE_SQLITE else "Postgres"))
+    log(" Groq: " + ("OK" if GROQ_CLIENT else "MISSING - add GROQ_API_KEY to .env"))
+    log(" NVIDIA: " + ("OK" if NVIDIA_API_KEY else "MISSING - add NVIDIA_API_KEY to .env for images"))
+    log(" Port: " + str(PORT))
+    try:
+        init_db()
+    except Exception as e:
+        log("DB init failed: " + str(e), "ERROR")
+        log(traceback.format_exc(), "ERROR")
+        sys.exit(1)
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    log("Listening on http://" + HOST + ":" + str(PORT))
+    log("=" * 60)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        log("Shutdown requested")
+        server.shutdown()
+
+
+if __name__ == "__main__":
+    main()
